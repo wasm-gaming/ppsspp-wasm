@@ -8,7 +8,7 @@ This adds the platform itself. No behaviour changes for any other target:
 every hunk is guarded by EMSCRIPTEN.
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 922889fdf..c5cd70b8a 100644
+index 922889fdf..2c87c3273 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -104,8 +104,34 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Android")
@@ -47,7 +47,7 @@ index 922889fdf..c5cd70b8a 100644
  	set(VULKAN ON)
  endif()
  
-@@ -294,7 +320,54 @@ include_directories(ext/glslang)
+@@ -294,7 +320,63 @@ include_directories(ext/glslang)
  # Anyway, glew will be going away anyway.
  include_directories(ext/glew)
  
@@ -60,6 +60,15 @@ index 922889fdf..c5cd70b8a 100644
 +	# PPSSPP's GLES3 backend maps onto WebGL2. WebGL1 is not enough for it, so both
 +	# bounds are pinned rather than left to negotiate.
 +	set(OPENGL_LIBRARIES "-sMIN_WEBGL_VERSION=2" "-sMAX_WEBGL_VERSION=2")
++
++	# `ext/armips` vendors ghc::filesystem, which detects its host from __linux__,
++	# __APPLE__, _WIN32 and friends — and Emscripten defines none of them, so it stops
++	# at `#error "Operating system currently not supported!"`. Its whole detection block
++	# is guarded by GHC_OS_DETECTED, so saying so from here selects the POSIX path
++	# without patching a header that lives inside a submodule of a submodule, where a
++	# patch series cannot reach it cleanly. Emscripten's libc is musl-derived, so the
++	# Linux path is the correct one rather than merely the one that compiles.
++	add_compile_definitions(GHC_OS_DETECTED GHC_OS_LINUX)
 +
 +	# Compile *and* link: pthreads and exceptions change the ABI, so a mismatch between
 +	# the two shows up as undefined symbols at the very end of a forty-minute build.
@@ -103,7 +112,7 @@ index 922889fdf..c5cd70b8a 100644
  	set(OPENGL_LIBRARIES GLESv3 EGL)
  elseif(NOT OPENGL_LIBRARIES AND USING_GLES2)
  	set(OPENGL_LIBRARIES GLESv2 EGL)
-@@ -318,7 +391,19 @@ set(SDL_LIB_TARGET "")
+@@ -318,7 +400,19 @@ set(SDL_LIB_TARGET "")
  set(SDL_TTF_LIB_TARGET "")
  set(FONTCONFIG_LIB_TARGET "")
  
@@ -124,7 +133,7 @@ index 922889fdf..c5cd70b8a 100644
  	find_package(SDL3 QUIET)
  	if(NOT SDL3_FOUND)
  		if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (EXISTS "/usr/bin/apt" OR EXISTS "/usr/bin/apt-get" OR EXISTS "/etc/debian_version"))
-@@ -1494,6 +1579,12 @@ if(TargetBin)
+@@ -1494,6 +1588,12 @@ if(TargetBin)
  	else()
  		add_executable(${TargetBin} ${NativeAppSource})
  	endif()

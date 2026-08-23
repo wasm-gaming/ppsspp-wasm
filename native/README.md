@@ -177,8 +177,9 @@ fails to apply, regenerate.
 
 ### 0001 — the Emscripten platform
 
-**Status: `emcmake cmake` configures cleanly.** That is the whole of what this patch
-claims, and it is the point the unpatched tree could not reach. Every hunk is guarded
+**Status: configures, and compiles past the first 150 of 1118 targets.** libzip,
+libpng and xxhash build clean, and the SDL3 port downloads and builds — so the flag
+set is sound. That is the whole of what this patch claims. Every hunk is guarded
 by `EMSCRIPTEN`, so no other target changes:
 
 - the platform block itself, which has to sit *before* the `option()` calls because it
@@ -190,7 +191,13 @@ by `EMSCRIPTEN`, so no other target changes:
   `INVOKE_RUN=0`, the runtime methods, the preloaded assets;
 - the output name, pinned to `ppsspp.js`. Upstream would emit `PPSSPPSDL.js`, and the
   SDK resolves the glue by a fixed path — a frontend rename upstream must not become a
-  broken import downstream.
+  broken import downstream;
+- `GHC_OS_DETECTED`/`GHC_OS_LINUX`. `ext/armips` vendors ghc::filesystem, which detects
+  its host from `__linux__`, `__APPLE__`, `_WIN32` and friends and stops at
+  `#error "Operating system currently not supported!"` when it recognises none of them.
+  Its detection block is guarded by `GHC_OS_DETECTED`, so saying so from the command
+  line picks the POSIX path — and does it without patching a header that lives inside a
+  submodule of a submodule, where a patch series cannot reach it cleanly.
 
 Three things were checked against a real `emcc` link rather than assumed, and two of
 them came back different from what the reference fork suggested:
