@@ -59,6 +59,15 @@ WASM_MAXIMUM_MEMORY ?= 4294967296
 WASM_JOBS ?= -j$(shell nproc 2>/dev/null || echo 4)
 CMAKE ?= cmake
 
+# Ninja stops the entire build at the first error. On a port of this size that means a
+# round costs ten minutes and buys exactly one diagnosis, while every target that was
+# already going to fail stays hidden behind it. `-k 0` builds everything whose inputs
+# are ready and collects *all* the independent failures in one go; the exit status is
+# still non-zero, so nothing downstream mistakes a failed build for a good one.
+#
+# Set it empty to get the stop-at-first-error behaviour back: `make wasm WASM_KEEP_GOING=`.
+WASM_KEEP_GOING ?= -k 0
+
 # Fetch the pinned upstream commit and apply this project's patch series onto it.
 # `--filter=blob:none` because a full PPSSPP history is around a gigabyte and the
 # build needs one revision of it.
@@ -106,7 +115,7 @@ wasm-config:
 		-DCMAKE_BUILD_TYPE=$(if $(RELEASE),Release,RelWithDebInfo)
 
 wasm-build:
-	$(CMAKE) --build "$(WASM_BUILD_DIR)" $(WASM_JOBS)
+	$(CMAKE) --build "$(WASM_BUILD_DIR)" $(WASM_JOBS) -- $(WASM_KEEP_GOING)
 	@# The loader resolves the glue relative to itself, so the artifacts land beside it.
 	mkdir -p src/native
 	cp "$(WASM_BUILD_DIR)"/ppsspp.js "$(WASM_BUILD_DIR)"/ppsspp.wasm src/native/

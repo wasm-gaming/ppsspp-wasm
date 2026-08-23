@@ -21,6 +21,25 @@ concurrency:
   group: wasm
   cancel-in-progress: true
 
+env:
+  # ccache is what makes a failed round cheap. Without it every round recompiles the
+  # 699 targets that already worked in order to reach the one that did not, and a
+  # ten-minute round buys a single diagnosis. `EM_COMPILER_WRAPPER` is Emscripten's own
+  # hook and is the right one to use here: it puts ccache in front of the *clang*
+  # invocation emcc finally makes, which is a command line ccache understands, rather
+  # than in front of emcc's Python driver, which it does not.
+  EM_COMPILER_WRAPPER: ccache
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  # Well under GitHub's 10 GB per-repository cache budget, which this shares with the
+  # Emscripten port cache below.
+  CCACHE_MAXSIZE: 2G
+  # The upstream checkout is thrown away and re-cloned every round, so every source
+  # file arrives with a fresh path-and-mtime. `basedir` rewrites absolute paths in the
+  # hash and `include_file_mtime` stops mtime alone from counting as a change — between
+  # them, an identical source recompiled in a fresh tree is still a cache hit.
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_SLOPPINESS: include_file_mtime,include_file_ctime,time_macros,locale
+
 jobs:
   wasm:
     runs-on: ubuntu-latest
@@ -34,17 +53,88 @@ jobs:
       - name: Install build tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ninja-build ca-certificates
+          apt-get install -y --no-install-recommends ninja-build ccache ca-certificates
 
       - name: Trust the workspace
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # Two caches, and they hold different things. ccache holds this project's own
+      # object files; the Emscripten cache holds the toolchain's — libc, libc++ and the
+      # SDL3, freetype and harfbuzz ports, none of which come prebuilt for the
+      # pthreads+SIMD+exceptions variant this build asks for, and all of which are
+      # rebuilt from scratch on a cold runner.
+      #
+      # Both are rolling caches: the key carries the run id so every round saves the
+      # state it ends with, and restore-keys picks up the most recent previous round.
+      # A cache entry is immutable once written, so a fixed key would freeze the first
+      # round's misses forever.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: wasm-ccache-${{ github.run_id }}
+          restore-keys: wasm-ccache-
+
+      - name: Restore the Emscripten cache
+        uses: actions/cache@v4
+        with:
+          path: /emsdk/upstream/emscripten/cache
+          key: wasm-emcache-5.0.7-${{ hashFiles('native/patches/*.patch', 'Makefile') }}-${{ github.run_id }}
+          restore-keys: |
+            wasm-emcache-5.0.7-${{ hashFiles('native/patches/*.patch', 'Makefile') }}-
+            wasm-emcache-5.0.7-
 
       # Fetches the revision pinned in native/UPSTREAM and applies native/patches/.
       - name: Check out PPSSPP
         run: make native-checkout
 
+      # `make wasm-release` passes ninja `-k 0`, so this collects every independent
+      # failure in one round rather than stopping at the first. The log is kept because
+      # a round with fifty failures is unreadable in the web UI and worth a lot as a
+      # file.
       - name: Build
-        run: make wasm-release
+        run: make wasm-release 2>&1 | tee build.log
+
+      # Runs even when the build succeeded: a successful build has no FAILED lines and
+      # this says so in one line, which is a cheaper thing to read than a green tick.
+      - name: Summarise the failures
+        if: always()
+        run: |
+          if [ ! -f build.log ]; then
+            echo "No build.log — the build step never ran." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          count=$(grep -c '^FAILED: ' build.log || true)
+          {
+            echo "## Build round"
+            echo
+            echo "**$count** failing target(s)."
+            if [ "$count" -gt 0 ]; then
+              echo
+              echo '```'
+              grep '^FAILED: ' build.log | sed 's/^FAILED: //' | head -100
+              echo '```'
+              echo
+              echo "First diagnostic of each failure — full output in the \`build-log\` artifact:"
+              echo
+              echo '```'
+              grep -A 6 '^FAILED: ' build.log | head -200
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$count failing target(s)."
+
+      - name: Report the ccache hit rate
+        if: always()
+        run: ccache --show-stats --verbose || ccache --show-stats || true
+
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: warn
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

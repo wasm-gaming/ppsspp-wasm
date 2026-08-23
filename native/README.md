@@ -66,6 +66,37 @@ make wasm-release       # the same, optimised
 `emcc` has to be on `PATH` — the CI job runs in `emscripten/emsdk:5.0.7`.
 Expect around forty minutes on four cores.
 
+### A round is a whole round
+
+Ninja stops at the first error by default, which on a port this size means a ten-minute
+round diagnoses exactly one mistake and hides every other one behind it. `make wasm`
+therefore passes `-k 0`, so ninja builds every target whose inputs are ready and reports
+*all* the independent failures together; the exit status is still non-zero. Pass
+`WASM_KEEP_GOING=` to get the stop-at-first-error behaviour back when bisecting a single
+target.
+
+The CI job (`.github/workflows/wasm.yml`) then keeps its whole output as a `build.log`
+artifact and writes the `FAILED:` lines into the run summary, because a round with fifty
+failures is not something to read by scrolling a web log.
+
+### What the CI job caches, and why it has to
+
+Two caches, holding different things:
+
+- **ccache**, over this project's own object files, wired up through Emscripten's
+  `EM_COMPILER_WRAPPER` — which puts ccache in front of the *clang* invocation `emcc`
+  finally makes, rather than in front of `emcc`'s Python driver. The upstream tree is
+  re-cloned every round, so `CCACHE_BASEDIR` and a `include_file_mtime` sloppiness
+  setting are what stop a fresh path and a fresh mtime from counting as a change.
+- **`/emsdk/upstream/emscripten/cache`**, holding the toolchain's own libraries: libc,
+  libc++, and the SDL3, freetype and harfbuzz ports. None of them ship prebuilt for the
+  pthreads + SIMD + exceptions variant this build asks for, so a cold runner builds all
+  of them before it reaches a line of PPSSPP.
+
+Both are rolling caches — the key carries the run id and `restore-keys` picks up the
+previous round — because a GitHub cache entry is immutable once written, so a fixed key
+would freeze the first round's misses forever.
+
 ### The shape of the Emscripten branch in CMake
 
 | Choice | Why |
