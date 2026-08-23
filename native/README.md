@@ -162,8 +162,23 @@ Cross-Origin-Embedder-Policy: require-corp
 
 A host that cannot set headers — GitHub Pages, for one — needs a service worker that
 injects them. Without isolation the module does not start at all, and the error the
-browser gives says nothing about the cause, so a host should check
-`crossOriginIsolated` and say so plainly.
+browser gives says nothing about the cause.
+
+Two things follow from that, and both are done rather than recommended:
+
+- **`src/loader.ts` checks `crossOriginIsolated`** before it imports the glue, and
+  throws an error naming both headers. `=== false`, not a falsy test: outside a browser
+  the global does not exist, and a Node host driving this package through its own
+  loader has no `SharedArrayBuffer` problem to be warned about.
+- **The demo carries [`coi-serviceworker`](https://github.com/gzuidhof/coi-serviceworker)**
+  (MIT), copied into `site/demo/` by `make site`. It registers a service worker that
+  adds the headers and reloads the page once. It lands beside the page rather than in
+  `site/vendor/` because a service worker's default scope is its own directory — one
+  served from `/vendor/` would not cover `/demo/`.
+
+Verified in a real Chromium against the built site: the page comes back
+`crossOriginIsolated === true` with `SharedArrayBuffer` available, and the demo still
+boots its stub afterwards.
 
 ## The bridge
 

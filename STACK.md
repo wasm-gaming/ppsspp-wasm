@@ -47,8 +47,10 @@ forty-minute C++ build whose artifacts are published as releases, never committe
 
 - **Cross-origin isolation is required.** Without `Cross-Origin-Opener-Policy:
   same-origin` and `Cross-Origin-Embedder-Policy: require-corp`, `SharedArrayBuffer`
-  is unavailable and the module never starts. Check `crossOriginIsolated` and say so
-  plainly rather than letting it fail obscurely.
+  is unavailable and the module never starts. The default loader checks
+  `crossOriginIsolated` and refuses with an error naming both headers, rather than
+  letting it fail obscurely; a host that cannot set headers can inject them with a
+  service worker, as the demo does with `coi-serviceworker`.
 - **A restart is expensive.** It is a fresh module, a fresh worker pool and a fresh
   canvas — not a soft reset.
 - **No video in UMD titles**, with ffmpeg off. No networking yet.

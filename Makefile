@@ -161,6 +161,12 @@ site: docs build
 	# The SDK imports the contract by name. A browser cannot resolve a bare specifier,
 	# so the demo carries an import map pointing at this copy — see demo/index.html.
 	cp node_modules/@wasm-gaming/engine-specs/dist/engine-specs.js site/vendor/
+	# Cross-origin isolation, which the emulator's threads require and which GitHub
+	# Pages cannot give us in headers. It lands in site/demo/ rather than site/vendor/
+	# on purpose: a service worker's default scope is its own directory, and one served
+	# from /vendor/ would not cover the page at /demo/. It is copied here rather than
+	# committed into demo/ so that the demo sources stay ours — see native/README.md.
+	cp node_modules/coi-serviceworker/coi-serviceworker.min.js site/demo/coi-serviceworker.js
 	touch site/.nojekyll
 
 # A previous preview left running holds the port, and python's own error for that says
