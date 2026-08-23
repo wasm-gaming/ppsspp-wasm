@@ -1,9 +1,10 @@
 name: Build
 
 on:
+  # Every branch, not just main: work on this repository happens on branches long
+  # before it becomes a pull request, and a CI that only runs on main is a CI that
+  # tells you nothing until it is too late to be cheap.
   push:
-    branches:
-      - main
   pull_request:
   workflow_call:
 

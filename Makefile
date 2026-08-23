@@ -69,7 +69,11 @@ native-clean:
 	rm -rf "$(NATIVE_DIR)" "$(WASM_BUILD_DIR)"
 
 # The flags are explained in native/README.md; the short version is that PPSSPP runs
-# on SDL2 over WebGL2, with threads, SIMD and exceptions, and no JIT.
+# on SDL3 over WebGL2, with threads, SIMD and exceptions, and no JIT.
+#
+# The SDL3 wiring is NOT here. `-sUSE_SDL=3` is a compiler flag, not a cache variable,
+# and upstream reaches SDL through `find_package(SDL3)` — which will never find an
+# Emscripten port. Teaching it to is part of the patch series, not of this invocation.
 WASM_CMAKE_ARGS := \
 	-G Ninja \
 	-DUSING_GLES2=ON \
@@ -79,7 +83,6 @@ WASM_CMAKE_ARGS := \
 	-DUSE_FFMPEG=OFF \
 	-DUSE_DISCORD=OFF \
 	-DUSE_MINIUPNPC=OFF \
-	-DUSE_SYSTEM_LIBSDL2=OFF \
 	-DUSE_SYSTEM_LIBPNG=OFF \
 	-DUSE_SYSTEM_FREETYPE=OFF \
 	-DUSE_SYSTEM_LIBZIP=OFF \

@@ -6,13 +6,13 @@
 # a fake. Running it on every pull request would buy nothing and cost an hour.
 name: Build wasm
 
+# Manual only, and it stays that way until native/patches/ actually contains the
+# Emscripten port. Upstream PPSSPP has no Emscripten support, so an unpatched tree
+# cannot configure, let alone build: a push trigger here would do nothing but burn
+# forty minutes and paint every branch red. Add the push trigger in the same commit
+# that makes this able to pass.
 on:
   workflow_dispatch:
-  push:
-    paths:
-      # The only things that can change what the emulator compiles to.
-      - 'native/**'
-      - '.github/workflows/wasm.yml'
 
 permissions:
   contents: read

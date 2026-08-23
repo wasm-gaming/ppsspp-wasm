@@ -23,7 +23,7 @@
         │
         ▼
    PPSSPP, compiled by Emscripten:  native/
-   SDL2 · WebGL2 · pthreads · IR interpreter
+   SDL3 · WebGL2 · pthreads · IR interpreter
 ```
 
 Everything above the double line is TypeScript with no runtime dependency beyond the
@@ -34,7 +34,7 @@ forty-minute C++ build whose artifacts are published as releases, never committe
 
 | Choice | Why |
 | --- | --- |
-| **Emscripten, SDL2 frontend** | PPSSPP's SDL frontend is the one that ports to the web; Qt and the native shells do not. Upstream has no Emscripten support at all, so `native/` is a port, not a configuration. |
+| **Emscripten, SDL3 frontend** | PPSSPP's SDL frontend is the one that ports to the web; Qt and the native shells do not. Upstream requires SDL3 (no SDL2 fallback) and has no Emscripten support at all, so `native/` is a port, not a configuration. Emscripten's `-sUSE_SDL=3` port exists but is marked experimental. |
 | **WebGL2, not WebGPU** | PPSSPP's GLES3 backend maps onto WebGL2 today. Vulkan cannot exist in a browser, and a WebGPU backend is a project of its own. |
 | **The IR interpreter, no JIT** | WebAssembly has no runtime code generation, so PPSSPP's JIT cannot be built at all. This is the single biggest performance constraint, and it is not one that engineering removes. |
 | **pthreads** | PPSSPP is genuinely multi-threaded. The cost is that the page must be cross-origin isolated (COOP/COEP) or the module will not start. |

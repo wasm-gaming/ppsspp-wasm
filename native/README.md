@@ -16,9 +16,44 @@ than a plan. So this is a port, not a configuration.
 It is a port that is known to work. The unofficial fork
 [`root-hunter/ppsspp-wasm`](https://github.com/root-hunter/ppsspp-wasm) (branch
 `wasm`, [live build](https://root-hunter.github.io/ppsspp-web/)) reached a playable
-browser build, and the CMake shape recorded below is derived from reading it. That is
-the reference; the patch series in `patches/` is ours, applied to upstream rather than
-to their fork, so we track `hrydgard/ppsspp` directly and can offer the work back.
+browser build, and the CMake shape recorded below started as a reading of it. The
+patch series in `patches/` is ours, applied to upstream rather than to their fork, so
+we track `hrydgard/ppsspp` directly and can offer the work back.
+
+**Read that reference with a date in mind.** It is based on a PPSSPP that still used
+SDL2, and upstream has since moved to SDL3 — see below. Anything copied from it has to
+be checked against the pinned revision rather than trusted.
+
+## SDL3, not SDL2
+
+At the pinned revision `CMakeLists.txt` does this:
+
+```cmake
+find_package(SDL3 QUIET)
+if(NOT SDL3_FOUND)
+    message(FATAL_ERROR "SDL3 not found. …")
+endif()
+set(SDL_LIB_TARGET SDL3::SDL3)
+find_package(SDL3_ttf QUIET)   # also fatal
+```
+
+No SDL2 fallback, and no `USE_SYSTEM_LIBSDL2` option any more — that variable is gone,
+so passing it does nothing. This is the first thing an unpatched Emscripten configure
+dies on, and it dies before reaching anything interesting.
+
+The good news is that Emscripten carries the ports: `-sUSE_SDL=3` and
+`-sUSE_SDL_TTF=3` are real, they are present in the `emscripten/emsdk:5.0.7` image
+this workflow uses, they build SDL 3.4.2, and there is a `sdl3-mt` variant so the
+threaded build is covered. The caveat is that emscripten's own port script warns
+`sdl3 port is still experimental`, and `sdl3_ttf` pulls in freetype and harfbuzz.
+
+**`find_package(SDL3)` will never find them.** An Emscripten port is not a CMake config
+package: it is a compile and link flag that puts headers and a static library in place.
+So the patch has to short-circuit the block above under `EMSCRIPTEN` — leave
+`SDL_LIB_TARGET`/`SDL_TTF_LIB_TARGET` empty, add `-sUSE_SDL=3 -sUSE_SDL_TTF=3` to the
+compile *and* link options, and skip the two `find_package` calls entirely. Same for
+the `find_package(Wayland)` above it, which an unpatched tree also reaches because
+nothing has told it this is not a Linux desktop.
 
 ## The build
 
@@ -35,7 +70,7 @@ Expect around forty minutes on four cores.
 
 | Choice | Why |
 | --- | --- |
-| `-sUSE_SDL=2` | PPSSPP's SDL frontend is the one that ports; the Qt and native ones do not. |
+| `-sUSE_SDL=3`, `-sUSE_SDL_TTF=3` | PPSSPP's SDL frontend is the one that ports; the Qt and native ones do not. Upstream requires SDL3 — see above. |
 | `-sMIN_WEBGL_VERSION=2`, `-sMAX_WEBGL_VERSION=2`, `-sFULL_ES3=1` | PPSSPP's GLES3 backend maps onto WebGL2. WebGL1 is not enough for it. |
 | `VULKAN=OFF` | No Vulkan in a browser. WebGPU is a later question, not this one. |
 | `-pthread`, `-sPTHREAD_POOL_SIZE` | PPSSPP is genuinely multi-threaded. This is what forces cross-origin isolation — see below. |
