@@ -167,13 +167,63 @@ channel survives `postMessage` unchanged the day the module moves to a worker.
 
 ## The patch series
 
-`patches/` holds the changes as `git format-patch` output, applied onto the pinned
-revision by `make native-checkout`. Keeping them as patches rather than as a vendored
-tree is what makes "what do we actually change about PPSSPP?" a question with a short
-answer, and what makes offering the work upstream a matter of sending the series.
+`patches/` holds the changes as diffs, applied onto the pinned revision by
+`make native-checkout`. Keeping them as patches rather than as a vendored tree is what
+makes "what do we actually change about PPSSPP?" a question with a short answer, and
+what makes offering the work upstream a matter of sending the series.
 
 Rolling forward is: bump `REV` in `UPSTREAM`, run `make native-checkout`, fix whatever
 fails to apply, regenerate.
+
+### 0001 — the Emscripten platform
+
+**Status: `emcmake cmake` configures cleanly.** That is the whole of what this patch
+claims, and it is the point the unpatched tree could not reach. Every hunk is guarded
+by `EMSCRIPTEN`, so no other target changes:
+
+- the platform block itself, which has to sit *before* the `option()` calls because it
+  decides their defaults;
+- `VULKAN` forced off — Emscripten reports `UNIX`, and leaving Vulkan on is also what
+  sends the X11 and Wayland searches after desktop libraries that are not there;
+- the SDL3 short-circuit described above;
+- the flag block: WebGL2, threads, SIMD, exceptions, memory, `MODULARIZE`,
+  `INVOKE_RUN=0`, the runtime methods, the preloaded assets;
+- the output name, pinned to `ppsspp.js`. Upstream would emit `PPSSPPSDL.js`, and the
+  SDK resolves the glue by a fixed path — a frontend rename upstream must not become a
+  broken import downstream.
+
+Three things were checked against a real `emcc` link rather than assumed, and two of
+them came back different from what the reference fork suggested:
+
+- **`INCOMING_MODULE_JS_API` takes only names Emscripten itself knows.** Listing
+  `ppssppEvent` or `pthreadPoolSize` there earns `invalid entry` warnings. It does not
+  matter: `MODULARIZE` emits `var Module = moduleArg`, so a host's own properties are
+  on the module object regardless and are reachable from C++. The list is now the
+  runtime's own names only.
+- **The runtime pool size works.** `-sPTHREAD_POOL_SIZE=Module['pthreadPoolSize']||…`
+  is emitted verbatim into the glue, so `config.threads` genuinely sizes the worker
+  pool rather than merely claiming to.
+- `-pthread` with `ALLOW_MEMORY_GROWTH` draws a performance warning from emcc
+  (non-wasm code runs slowly across a growing heap). Accepted: PPSSPP cannot fit a
+  fixed heap, and it needs its threads.
+
+### What is not done
+
+The build itself has not been run to completion anywhere yet. Configure passing means
+the tree is now *buildable* in the sense that ninja has a plan; it says nothing about
+whether a million lines of C++ compile under Emscripten. Expect the real work to be
+there — `Common/CPUDetect`, threading, the file system, and the GL backend are the
+usual places a port of this size bleeds.
+
+The bridge in the next section is also still unwritten, so nothing exports
+`ppsspp_web_*` yet and `-sEXPORTED_FUNCTIONS` is deliberately absent: naming a symbol
+that does not exist is a link error.
+
+**Note for anyone building in this repository's own agent sandbox:** the Emscripten
+SDL3 port is fetched from `https://github.com/libsdl-org/SDL/archive/release-3.4.2.zip`,
+and that URL is refused (HTTP 403) by the sandbox's egress policy, so a local build
+stops at the first compile. CI has no such restriction — `Build wasm` is where the
+compile actually gets attempted.
 
 ## Known to be missing
 
