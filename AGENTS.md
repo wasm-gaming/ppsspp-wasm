@@ -4,6 +4,35 @@
 
 Check [STACK.md](STACK.md).
 
+## Sessions
+
+Every session is recorded in [`SESSIONS/`](./SESSIONS/), named
+`YYYY-MM-DD_HHhMM.<kebab-case-summary>.session.md`, in English.
+
+Two rules, and they pull in different directions on purpose:
+
+- **No prior approval is needed.** Work proceeds — no waiting on a plan being signed off. This is
+  where this repository parts company with
+  [`engine-specs`](https://github.com/wasm-gaming/engine-specs), whose session-first workflow
+  requires it.
+- **But it must end up written down.** A session file is not a changelog of commits; it is the
+  record of what was decided, what was learned, and what is *not* true yet. The parts that earn
+  their keep are the ones a commit message cannot hold:
+
+  | Section | What it is for |
+  | --- | --- |
+  | `Where this repo actually was` | The state of the world before, so a later reader can tell what changed from what was already broken. |
+  | `Walkthrough · as built` | What landed, not what was planned. |
+  | `Bugs found by building, not by reading` | Defects the *process* surfaced, with their cause. These are the ones that get re-introduced otherwise. |
+  | `Verified, and not` | Two explicit lists. The second one matters more: name the caveat and the risk taken. |
+  | `Loose ends, deliberately left` | What was not done, and what it would cost. |
+
+**Always append, never rewrite.** Extensions are `## Extension · <date> · <summary>`, corrections
+are `### Correction · …`. When a decision supersedes an earlier one, say so out loud in the new
+text and leave the old text standing — a session file that has been edited to look right is worth
+nothing, because the wrong turns are most of the value. The SSE-versus-architecture reversal in
+the 2026-08-23 file is the worked example.
+
 ## What this repository is
 
 Two things, kept deliberately apart:
