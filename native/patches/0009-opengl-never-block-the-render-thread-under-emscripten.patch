@@ -1,0 +1,54 @@
+Subject: [PATCH 9/9] Common/GPU: never block the render thread under Emscripten
+
+Patch 0008 gave the GL loop back to the browser's event loop, and the port then
+got as far as five animation frames before stopping again. What stops it is one
+line inside the loop body: GLRenderManager::ThreadFrame() waits on a condition
+variable until the emu thread pushes a task.
+
+On every other platform the render thread is a thread of our own and that wait
+is exactly right. Here the render thread is the browser's main thread, and a
+blocking wait there is worse than slow. While the main thread sits in the wait
+it is not servicing the proxy queue that Emscripten's worker threads use to
+reach it — so a wait for the emu thread can be a wait on ourselves. Emscripten
+says as much at runtime:
+
+    Blocking on the main thread is very dangerous, see
+    https://emscripten.org/docs/porting/pthreads.html#blocking-on-the-main-browser-thread
+
+So under Emscripten an empty queue means there is no frame to run yet, and the
+honest answer is to return and let the event loop turn. The caller is
+emscripten_set_main_loop, so the question is asked again on the next animation
+frame; a frame left partway through resumes where it stopped, since nothing else
+touches GL in between.
+
+Every other platform keeps the wait, and the change is confined to that one
+branch.
+
+diff --git a/Common/GPU/OpenGL/GLRenderManager.cpp b/Common/GPU/OpenGL/GLRenderManager.cpp
+index e6385773a..c1f03084d 100644
+--- a/Common/GPU/OpenGL/GLRenderManager.cpp
++++ b/Common/GPU/OpenGL/GLRenderManager.cpp
+@@ -149,7 +149,23 @@ bool GLRenderManager::ThreadFrame() {
+ 		// to keep things uniform.
+ 		{
+ 			std::unique_lock<std::mutex> lock(pushMutex_);
++#ifdef __EMSCRIPTEN__
++			// The render thread is the browser's main thread, and it must not block.
++			// While it sits in this wait it is also not servicing the queue that worker
++			// threads use to reach it, so waiting here for the emu thread can be waiting
++			// on ourselves — and even when it is not, a main thread that does not return
++			// to the event loop presents no frame and answers no input.
++			//
++			// There is simply no work yet, so say so. The caller runs this from
++			// emscripten_set_main_loop, and will ask again on the next animation frame;
++			// a frame left half-run resumes exactly where it stopped, because nothing
++			// else touches GL in between.
++			if (renderThreadQueue_.empty()) {
++				return true;
++			}
++#else
+ 			pushCondVar_.wait(lock, [this] { return !renderThreadQueue_.empty(); });
++#endif
+ 			task = renderThreadQueue_.front();
+ 			renderThreadQueue_.pop();
+ 		}
