@@ -69,20 +69,18 @@ jobs:
       # A cache entry is immutable once written, so a fixed key would freeze the first
       # round's misses forever.
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: wasm-ccache-${{ github.run_id }}
           restore-keys: wasm-ccache-
 
       - name: Restore the Emscripten cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: /emsdk/upstream/emscripten/cache
-          key: wasm-emcache-5.0.7-${{ hashFiles('native/patches/*.patch', 'Makefile') }}-${{ github.run_id }}
-          restore-keys: |
-            wasm-emcache-5.0.7-${{ hashFiles('native/patches/*.patch', 'Makefile') }}-
-            wasm-emcache-5.0.7-
+          key: wasm-emcache-5.0.7-${{ github.run_id }}
+          restore-keys: wasm-emcache-5.0.7-
 
       # Fetches the revision pinned in native/UPSTREAM and applies native/patches/.
       - name: Check out PPSSPP
@@ -93,7 +91,21 @@ jobs:
       # a round with fifty failures is unreadable in the web UI and worth a lot as a
       # file.
       - name: Build
-        run: make wasm-release 2>&1 | tee build.log
+        id: build
+        # `shell: bash` is load-bearing, not decoration. The default shell for a `run`
+        # step is `bash -e {0}` — no `pipefail` — so `make | tee` reports tee's exit
+        # status and a build with fifty compile errors comes back green. Naming the
+        # shell is what gets `-o pipefail`; the explicit `set` says so out loud.
+        #
+        # continue-on-error, because a failed step ends the job, and the caches are
+        # saved by steps that come after this one. Every round of a port in progress is
+        # a failed round, so a cache that only survives success is a cache that never
+        # exists. The job is failed deliberately by the last step instead.
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          make wasm-release 2>&1 | tee build.log
 
       # Runs even when the build succeeded: a successful build has no FAILED lines and
       # this says so in one line, which is a cheaper thing to read than a green tick.
@@ -128,6 +140,24 @@ jobs:
         if: always()
         run: ccache --show-stats --verbose || ccache --show-stats || true
 
+      # `actions/cache` saves in a post step guarded by success(), so on a red round it
+      # saves nothing at all — which is every round until the port links. Restoring and
+      # saving as separate steps, with `if: always()`, is what makes a failed round pay
+      # for the next one.
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: wasm-ccache-${{ github.run_id }}
+
+      - name: Save the Emscripten cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /emsdk/upstream/emscripten/cache
+          key: wasm-emcache-5.0.7-${{ github.run_id }}
+
       - name: Upload the build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -137,8 +167,17 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload artifacts
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: ppsspp-wasm
           path: src/native/
           if-no-files-found: error
+
+      # The build's own verdict, applied after the caches are safe. Without this the
+      # job would be green with a failed build in it.
+      - name: Fail the job if the build failed
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "The build step failed — see the run summary and the build-log artifact."
+          exit 1
