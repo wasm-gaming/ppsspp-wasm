@@ -1,0 +1,118 @@
+Subject: [PATCH 8/8] SDL: drive the GL main loop from the browser's event loop
+
+PPSSPP's OpenGL path makes the thread that owns the GL context the render
+thread, and that thread never comes back: main() runs `while (true)` around
+graphicsContext->ThreadFrame(), which is GLRenderManager::ThreadFrame(), which
+waits on a condition variable until the emu thread submits a frame.
+
+That is correct on every platform where the render thread is a thread of our
+own. In a browser it is the thread the page also needs for input, for
+compositing, and for the WebGL swap — which only happens when control returns to
+the event loop. Holding it means no frame is ever presented and the tab stops
+responding.
+
+Measured rather than assumed: a browser harness installs a heartbeat on the main
+thread before callMain() and asks for it afterwards from outside. Before this
+patch the page stops answering at the callMain stage, having got as far as
+creating its window and registering its event handlers.
+
+The loop body is lifted into `oneIteration()` and is otherwise untouched — the
+two `break`s become `return false`, and nothing else moves. Native builds run it
+in the same `while` as before. Emscripten hands it to
+emscripten_set_main_loop at 0 fps, which means requestAnimationFrame: the
+browser's own clock, and the right one for a renderer.
+
+The GL context stays on the main thread, which is where a browser wants it.
+Moving main() to a worker with -sPROXY_TO_PTHREAD would take the whole render
+thread with it and turn this into a WebGL-on-a-worker problem, needing
+OffscreenCanvas or proxied GL; this needs neither.
+
+simulate_infinite_loop is set, so main() stops at that call rather than falling
+into the shutdown below, and Emscripten leaves the frame standing rather than
+unwinding it — which is what keeps the captures in the callback valid.
+
+diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
+index c20b1303a..1bb399fd9 100644
+--- a/SDL/SDLMain.cpp
++++ b/SDL/SDLMain.cpp
+@@ -13,6 +13,11 @@ SDLJoystick *joystick = NULL;
+ #include <bcm_host.h>
+ #endif
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++#include <functional>
++#endif
++
+ #include <atomic>
+ #include <algorithm>
+ #include <cmath>
+@@ -2199,7 +2204,10 @@ int main(int argc, char *argv[]) {
+ 			NativeFrame(graphicsContext);
+ 			return true;
+ 		});
+-		while (true) {
++		// One turn of the loop, lifted out unchanged so that a platform which owns its
++		// own event loop can drive it a turn at a time. Returns false when the loop is
++		// finished, which is what the `break`s below used to mean.
++		auto oneIteration = [&]() -> bool {
+ 			// OpenGL mode uses this.
+ 			{
+ 				SDL_Event event;
+@@ -2208,7 +2216,7 @@ int main(int argc, char *argv[]) {
+ 				}
+ 			}
+ 			if (g_QuitRequested || g_RestartRequested)
+-				break;
++				return false;
+ 
+ 			UpdateTextFocus(window);
+ 			UpdateSDLCursor();
+@@ -2225,7 +2233,7 @@ int main(int argc, char *argv[]) {
+ 					// and has now reached the end of the submitted frames.
+ 					// EmuThread will be in the process of exiting, so below
+ 					// we can just EmuThread_Join().
+-					break;
++					return false;
+ 				}
+ 			}
+ 
+@@ -2235,9 +2243,38 @@ int main(int argc, char *argv[]) {
+ 					UpdateWindowState(window);
+ 				}
+ 			}
++			return true;
++		};
++
++#ifdef __EMSCRIPTEN__
++		// A browser's main thread is not ours to hold, and this loop holds it for the
++		// entire run: ThreadFrame() waits on a condition variable until the emu thread
++		// submits a frame. That is correct on every platform where the render thread is
++		// a thread of our own. Here it is also the thread the browser needs for events,
++		// for compositing, and for the WebGL swap that only happens when we return — so
++		// holding it means no frame is ever presented, and the tab stops.
++		//
++		// Same body, one turn per animation frame. Nothing above this line changes.
++		static std::function<void()> webIteration;
++		webIteration = [&]() {
++			if (!oneIteration()) {
++				emscripten_cancel_main_loop();
++				INFO_LOG(Log::System, "Requesting render thread exit...");
++				EmuThread_Join(graphicsContext, emuThread);
++			}
++		};
++		// 0 fps asks for requestAnimationFrame, which is the browser's own pace and the
++		// right clock for a renderer. The last argument makes this call throw rather
++		// than return, so main() stops here instead of falling into the shutdown below;
++		// Emscripten leaves the frame standing rather than unwinding it, which is what
++		// keeps the captures above valid for the callbacks.
++		emscripten_set_main_loop([]() { webIteration(); }, 0, 1);
++#else
++		while (oneIteration()) {
+ 		}
+ 		INFO_LOG(Log::System, "Requesting render thread exit...");
+ 		EmuThread_Join(graphicsContext, emuThread);
++#endif
+ 	}
+ 
+ #if !PPSSPP_PLATFORM(MAC)
