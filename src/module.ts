@@ -100,7 +100,16 @@ export interface PpssppModule {
 
 /** What the module factory is handed. Mirrors `-sINCOMING_MODULE_JS_API`. */
 export interface PpssppModuleInit {
-  /** PPSSPP renders here. SDL2's Emscripten backend takes the element as given. */
+  /**
+   * PPSSPP renders here.
+   *
+   * **This is not yet enough for SDL3, and the gap is known.** SDL2's Emscripten
+   * backend took the element from the module; SDL3's resolves a *CSS selector* from
+   * `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`, defaulting to `#canvas`, and fails window
+   * creation outright when nothing matches. Since a restart builds a new canvas, they
+   * cannot all carry that id, so the selector has to become part of this seam. See
+   * `native/README.md`; until then the emulator gets no GL context.
+   */
   canvas: HTMLCanvasElement;
   /** Worker pool size. Comes from `config.threads`, resolved against the machine. */
   pthreadPoolSize: number;
