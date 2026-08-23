@@ -285,6 +285,18 @@ what makes offering the work upstream a matter of sending the series.
 Rolling forward is: bump `REV` in `UPSTREAM`, run `make native-checkout`, fix whatever
 fails to apply, regenerate.
 
+**`native/ppsspp/` is build output, and it is always dirty.** It is gitignored
+(`.gitignore`), it is a git repository of its own, and after `make native-checkout` its
+working tree carries every patch in the series as an uncommitted modification — that is
+what "checked out" means here. Nothing in it is ever committed, and a tool that walks
+the tree looking for unsaved work will flag it on every session. The state to compare
+against is not "clean" but "pinned revision plus the series", which
+`make native-checkout` reproduces from nothing.
+
+Which is also how a patch is written: edit the file in that tree, then
+`git -C native/ppsspp diff <path>` is the patch. `make native-clean` throws the whole
+thing away.
+
 ### Patches that land inside a submodule
 
 `git apply --3way` in the PPSSPP worktree cannot touch a file inside one of its
