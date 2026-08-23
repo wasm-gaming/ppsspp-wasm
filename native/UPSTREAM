@@ -1,0 +1,16 @@
+# Where the emulator comes from, and exactly which commit of it.
+#
+# A pinned checkout plus a patch series, rather than a submodule, and rather than a
+# vendored copy of a 1 GB tree. The reasons, in order:
+#
+#   - A pin is readable. `git log` on this file is the honest history of "which PPSSPP
+#     are we on", which a submodule's 40-character gitlink is not.
+#   - The patch series in `patches/` is then the whole of what this project changes
+#     about PPSSPP, in a form a person can read and upstream can be offered.
+#   - Nobody cloning this repository to work on the JavaScript pays for a 1 GB fetch.
+#
+# `make native-checkout` reads this file. Moving to a fork of our own is a one-line
+# change of URL here — the patch series does not care which remote it applies to.
+
+URL=https://github.com/hrydgard/ppsspp.git
+REV=a67ae4e7f64de583e8796273c9f2a407c4a1be8e

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "src/ppsspp-wasm.ts"
+  ],
+  "out": "site",
+  "name": "@wasm-gaming/ppsspp-wasm",
+  "includeVersion": true,
+  "readme": "README.md",
+  "githubPages": true,
+  "hideGenerator": true,
+  "navigationLinks": {
+    "Demo": "https://wasm-gaming.github.io/ppsspp-wasm/demo/",
+    "Contract": "https://wasm-gaming.github.io/engine-specs/",
+    "GitHub": "https://github.com/wasm-gaming/ppsspp-wasm"
+  },
+  "categorizeByGroup": true,
+  "sort": [
+    "source-order"
+  ],
+  "navigation": {
+    "includeGroups": true,
+    "includeFolders": true,
+    "compactFolders": true
+  },
+  "headings": {
+    "readme": false,
+    "document": false
+  },
+  "externalSymbolLinkMappings": {
+    "@wasm-gaming/engine-specs": {
+      "*": "https://wasm-gaming.github.io/engine-specs/",
+      "EventEmitter.off": "https://wasm-gaming.github.io/engine-specs/classes/EventEmitter.html#off",
+      "CoreEvents": "https://wasm-gaming.github.io/engine-specs/interfaces/CoreEvents.html"
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "@wasm-gaming/ppsspp-wasm",
+  "version": "0.1.0",
+  "description": "PPSSPP compiled to WebAssembly, wrapped in the wasm-gaming engine contract. The PSP emulator as one more engine a host can drive without knowing it is PPSSPP.",
+  "type": "module",
+  "types": "./dist/ppsspp-wasm.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/ppsspp-wasm.d.ts",
+      "import": "./dist/ppsspp-wasm.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "src/"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
+  "dependencies": {
+    "@wasm-gaming/engine-specs": "^0.3.2"
+  },
+  "devDependencies": {
+    "typedoc": "^0.28.20",
+    "typescript": "^5.5.0"
+  },
+  "license": "GPL-2.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wasm-gaming/ppsspp-wasm.git"
+  }
+}
