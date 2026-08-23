@@ -8,8 +8,8 @@ Check [STACK.md](STACK.md).
 
 Work is recorded in [`SESSIONS/`](./SESSIONS/), one file per **body of work** — not one per
 sitting. A file is opened when a piece of work starts, named
-`YYYY-MM-DD_HHhMM.<kebab-case-summary>.session.md` for the moment it was opened, and written in
-English. Several sessions may extend the same file; one session may open more than one.
+`YYYY-MM-DD_HHhMM.<kebab-case-summary>.md` for the moment it was opened, and written in English.
+Several sessions may extend the same file; one session may open more than one.
 
 Two rules, and they pull in different directions on purpose:
 
@@ -36,11 +36,11 @@ When everything a file set out to do is done:
 
 1. **Append a final `## Walkthrough · as completed`** — what actually landed across the whole
    body of work, not a summary of what was planned.
-2. **Rename it from `.session.md` to `.session.completed.md`.**
+2. **Rename it from `.md` to `.completed.md`.**
 
-So `SESSIONS/` read at a glance answers the two questions that matter: `*.session.md` is what is
-still open, `*.session.completed.md` is what is finished and why. Nothing is deleted, and nothing
-moves out of the folder.
+So `SESSIONS/` read at a glance answers the two questions that matter: `*.md` is what is still
+open, `*.completed.md` is what is finished and why. Nothing is deleted, and nothing moves out of
+the folder.
 
 A file is only closed when its `Next` is empty. If part of the work is being abandoned rather
 than finished, say so in the walkthrough — an abandoned item closed quietly is indistinguishable
