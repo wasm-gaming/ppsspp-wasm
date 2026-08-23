@@ -1,0 +1,43 @@
+Subject: [PATCH 2/2] config: give WebAssembly its own architecture
+
+ppsspp_config.h claimed __EMSCRIPTEN__ was PPSSPP_ARCH_X86 with
+PPSSPP_ARCH_SSE2 — true in the asm.js era, false now, and it sends
+Common/CommonFuncs.h into <x86intrin.h>, which pulls in SSE4a, FMA4 and
+XOP headers that no wasm toolchain implements.
+
+wasm32 is its own architecture, alongside the existing RISCV64, MIPS and
+LOONGARCH64 branches, and saying so lets the generic paths do their job.
+
+diff --git a/ppsspp_config.h b/ppsspp_config.h
+index 7984a3d1b..f38997f32 100644
+--- a/ppsspp_config.h
++++ b/ppsspp_config.h
+@@ -8,7 +8,7 @@
+ #define PPSSPP_API(PPSSPP_FEATURE) (PPSSPP_API_##PPSSPP_FEATURE)
+ 
+ // ARCH defines
+-#if defined(_M_IX86) || defined(__i386__) || defined (__EMSCRIPTEN__)
++#if defined(_M_IX86) || defined(__i386__)
+     #define PPSSPP_ARCH_X86 1
+     #define PPSSPP_ARCH_32BIT 1
+     #define PPSSPP_ARCH_SSE2 1
+@@ -63,6 +63,19 @@
+     #define PPSSPP_ARCH_ARM64_NEON 1
+ #endif
+ 
++// WebAssembly. Previously this file claimed __EMSCRIPTEN__ was PPSSPP_ARCH_X86 with
++// PPSSPP_ARCH_SSE2 — true enough in the asm.js era, and untrue now: it sends
++// Common/CommonFuncs.h into <x86intrin.h>, which pulls SSE4a, FMA4 and XOP headers that
++// no wasm toolchain implements. wasm32 is its own architecture with its own SIMD, and
++// saying so lets the generic paths do their job.
++#if defined(__EMSCRIPTEN__) || defined(__wasm__)
++    #define PPSSPP_ARCH_WASM 1
++    #define PPSSPP_ARCH_32BIT 1
++    #if defined(__wasm_simd128__)
++        #define PPSSPP_ARCH_WASM_SIMD 1
++    #endif
++#endif
++
+ #if defined(__mips64__)
+     #define PPSSPP_ARCH_MIPS64 1
+     #define PPSSPP_ARCH_64BIT 1
