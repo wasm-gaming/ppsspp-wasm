@@ -102,6 +102,12 @@ const HARNESS = `<!doctype html>
     const mod = await createPpsspp({
       canvas: document.getElementById('canvas'),
       pthreadPoolSize: ${POOL},
+      // The glue is served under /native/ and the page is at /, which is the shape of
+      // a real host — the emulator inside node_modules, the page anywhere. Without
+      // this, Emscripten asks the *document* for ppsspp.data, gets a 404 and waits for
+      // it forever. src/loader.ts defaults to exactly this; the harness says it out
+      // loud because here there is no loader in the way.
+      locateFile: (path) => '/native/' + path,
       print: (t) => keep('stdout', t),
       printErr: (t) => keep('stderr', t),
       onAbort: (what) => { state.error = 'abort: ' + what; say({ kind: 'abort', text: String(what) }); },

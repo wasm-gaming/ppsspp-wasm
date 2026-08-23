@@ -17,6 +17,28 @@ import type { PpssppLoader, PpssppModule, PpssppModuleInit } from './module.js';
  */
 const GLUE = 'native/ppsspp.js';
 
+/**
+ * Where the `.wasm` and the `.data` are, given where the glue is.
+ *
+ * This exists because Emscripten resolves the two halves of its own output by
+ * *different* rules, and only one of them is what a reader expects. With
+ * `-sEXPORT_ES6` the `.wasm` is found relative to the glue module, through
+ * `import.meta.url`. The file-packager code that `--preload-file` generates is not so
+ * lucky: it asks for `ppsspp.data` by a bare relative name, which the browser resolves
+ * against the **document**, not against the module that referenced it.
+ *
+ * So on any page not served from the same directory as the glue — which is every real
+ * host, since the glue ships inside `node_modules` — the `.data` 404s. And it does not
+ * fail loudly: the package's run dependency is never cleared, the module factory's
+ * promise never settles, and the host sees `start()` hang with nothing in the console
+ * but Emscripten repeating "still waiting on run dependencies".
+ *
+ * Found by pointing `make smoke` at a page that serves the glue under `/native/`, which
+ * is what a host looks like and what the demo's stub never was.
+ */
+export const besideTheGlue = (path: string): string =>
+  new URL(path, new URL(GLUE, import.meta.url)).href;
+
 /** What Emscripten's `-sMODULARIZE=1 -sEXPORT_ES6=1` default export looks like. */
 type ModuleFactory = (init: Record<string, unknown>) => Promise<PpssppModule>;
 
@@ -74,7 +96,9 @@ export const loadPpsspp: PpssppLoader = async (init: PpssppModuleInit): Promise<
     // Read by the `-sPTHREAD_POOL_SIZE` expression the build links with, which is how
     // a link-time pool size is made to follow a runtime decision. See native/README.md.
     pthreadPoolSize: init.pthreadPoolSize,
-    ...(init.locateFile ? { locateFile: init.locateFile } : {}),
+    // A host that knows better still wins; the default is only what makes the module
+    // find its own files when nobody says otherwise.
+    locateFile: init.locateFile ?? besideTheGlue,
     ...(init.print ? { print: init.print } : {}),
     ...(init.printErr ? { printErr: init.printErr } : {}),
     ...(init.onAbort ? { onAbort: init.onAbort } : {}),
