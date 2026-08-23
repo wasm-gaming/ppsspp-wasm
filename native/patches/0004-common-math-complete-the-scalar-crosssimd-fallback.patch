@@ -1,0 +1,45 @@
+Subject: [PATCH 4/5] Common/Math: complete the scalar CrossSIMD fallback
+
+Two more members that only the no-SIMD branch of CrossSIMD.h lacks, found
+the same way as the LoadF24x4 fix before it: by being the first build to
+compile that branch.
+
+  - Vec4F32::WithLane3From is implemented by the SSE, NEON and LSX
+    branches and used by GPU/Common/SoftwareTransformCommon.cpp. The
+    scalar Vec4F32 has WithLane3Zero and WithLane3One but not this one.
+  - AnyCompareBitsSet(Vec4S32) is likewise implemented by all three
+    vector branches and used by GPU/Common/DrawEngineCommon.cpp, and is
+    missing from the scalar branch, which has only AllCompareBitsSet.
+
+Both are written in the shape of the scalar code beside them rather than
+translated from a vector branch. Compare masks in this header are all-ones
+or all-zeros per lane, so testing lanes against 0xFFFFFFFF matches what
+the movemask-based branches do.
+
+diff --git a/Common/Math/CrossSIMD.h b/Common/Math/CrossSIMD.h
+index bab907de3..09ade151c 100644
+--- a/Common/Math/CrossSIMD.h
++++ b/Common/Math/CrossSIMD.h
+@@ -1801,6 +1801,10 @@ struct Vec4F32 {
+ 		return Vec4F32{ { v[0], v[1], v[2], 1.0f } };
+ 	}
+ 
++	Vec4F32 WithLane3From(Vec4F32 other) const {
++		return Vec4F32{ { v[0], v[1], v[2], other.v[3] } };
++	}
++
+ 	Vec4S32 CompareEq(Vec4F32 other) const {
+ 		Vec4S32 temp;
+ 		for (int i = 0; i < 4; i++) {
+@@ -1922,6 +1926,11 @@ inline bool AllCompareBitsSet(Vec4S32 value) {
+ 	return true;
+ }
+ 
++inline bool AnyCompareBitsSet(Vec4S32 value) {
++	if (value.v[0] == 0xFFFFFFFF || value.v[1] == 0xFFFFFFFF || value.v[2] == 0xFFFFFFFF || value.v[3] == 0xFFFFFFFF) return true;
++	return false;
++}
++
+ struct Vec4U16 {
+ 	uint16_t v[4];  // 64 bits.
+ 

@@ -59,6 +59,15 @@ WASM_MAXIMUM_MEMORY ?= 4294967296
 WASM_JOBS ?= -j$(shell nproc 2>/dev/null || echo 4)
 CMAKE ?= cmake
 
+# Ninja stops the entire build at the first error. On a port of this size that means a
+# round costs ten minutes and buys exactly one diagnosis, while every target that was
+# already going to fail stays hidden behind it. `-k 0` builds everything whose inputs
+# are ready and collects *all* the independent failures in one go; the exit status is
+# still non-zero, so nothing downstream mistakes a failed build for a good one.
+#
+# Set it empty to get the stop-at-first-error behaviour back: `make wasm WASM_KEEP_GOING=`.
+WASM_KEEP_GOING ?= -k 0
+
 # Fetch the pinned upstream commit and apply this project's patch series onto it.
 # `--filter=blob:none` because a full PPSSPP history is around a gigabyte and the
 # build needs one revision of it.
@@ -68,7 +77,9 @@ native-checkout:
 	fi
 	git -C "$(NATIVE_DIR)" fetch --filter=blob:none origin "$(UPSTREAM_REV)"
 	git -C "$(NATIVE_DIR)" checkout --force --detach "$(UPSTREAM_REV)"
-	git -C "$(NATIVE_DIR)" submodule update --init --recursive --depth 1
+	@# --force so a second run resets a worktree the submodule patches below dirtied,
+	@# which is what makes `make native-checkout` repeatable rather than one-shot.
+	git -C "$(NATIVE_DIR)" submodule update --init --recursive --force --depth 1
 	@# The patch series is the whole of what this project changes about PPSSPP.
 	@if ls native/patches/*.patch >/dev/null 2>&1; then \
 		git -C "$(NATIVE_DIR)" apply --3way $(addprefix $(CURDIR)/,$(wildcard native/patches/*.patch)); \
@@ -76,6 +87,20 @@ native-checkout:
 	else \
 		echo "No patches in native/patches/ — see native/README.md."; \
 	fi
+	@# A patch that lands inside a submodule cannot go through the apply above: a
+	@# submodule is a separate repository, and the parent's object database does not
+	@# have its blobs, so --3way has nothing to merge against. Those patches live under
+	@# native/patches/submodules/<submodule path>/ and are applied in the submodule's
+	@# own worktree instead.
+	@find native/patches/submodules -name '*.patch' 2>/dev/null | sort | while read -r patch; do \
+		sub=$$(dirname "$${patch#native/patches/submodules/}"); \
+		if [ ! -d "$(NATIVE_DIR)/$$sub" ]; then \
+			echo "No submodule at $$sub for $$patch — has it been renamed upstream?" >&2; \
+			exit 1; \
+		fi; \
+		git -C "$(NATIVE_DIR)/$$sub" apply --3way "$(CURDIR)/$$patch" || exit 1; \
+		echo "Applied $$(basename "$$patch") in $$sub."; \
+	done
 
 native-clean:
 	rm -rf "$(NATIVE_DIR)" "$(WASM_BUILD_DIR)"
@@ -106,7 +131,7 @@ wasm-config:
 		-DCMAKE_BUILD_TYPE=$(if $(RELEASE),Release,RelWithDebInfo)
 
 wasm-build:
-	$(CMAKE) --build "$(WASM_BUILD_DIR)" $(WASM_JOBS)
+	$(CMAKE) --build "$(WASM_BUILD_DIR)" $(WASM_JOBS) -- $(WASM_KEEP_GOING)
 	@# The loader resolves the glue relative to itself, so the artifacts land beside it.
 	mkdir -p src/native
 	cp "$(WASM_BUILD_DIR)"/ppsspp.js "$(WASM_BUILD_DIR)"/ppsspp.wasm src/native/
@@ -136,6 +161,12 @@ site: docs build
 	# The SDK imports the contract by name. A browser cannot resolve a bare specifier,
 	# so the demo carries an import map pointing at this copy — see demo/index.html.
 	cp node_modules/@wasm-gaming/engine-specs/dist/engine-specs.js site/vendor/
+	# Cross-origin isolation, which the emulator's threads require and which GitHub
+	# Pages cannot give us in headers. It lands in site/demo/ rather than site/vendor/
+	# on purpose: a service worker's default scope is its own directory, and one served
+	# from /vendor/ would not cover the page at /demo/. It is copied here rather than
+	# committed into demo/ so that the demo sources stay ours — see native/README.md.
+	cp node_modules/coi-serviceworker/coi-serviceworker.min.js site/demo/coi-serviceworker.js
 	touch site/.nojekyll
 
 # A previous preview left running holds the port, and python's own error for that says

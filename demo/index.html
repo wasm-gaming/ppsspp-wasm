@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>@wasm-gaming/ppsspp-wasm — the contract, driven</title>
     <link rel="stylesheet" href="demo.css" />
+    <!--
+      Cross-origin isolation, first thing on the page.
+
+      PPSSPP's threads mean SharedArrayBuffer, which a browser only hands to a page
+      served with COOP: same-origin and COEP: require-corp. GitHub Pages cannot set
+      headers, so coi-serviceworker installs a service worker that adds them and
+      reloads the page once. Nothing else on the page can run before this, which is why
+      it is a blocking script in the head rather than a module.
+
+      `make site` copies it in from node_modules; it is not part of the demo sources.
+      A host embedding this SDK is expected to set the two headers properly instead.
+    -->
+    <script src="coi-serviceworker.js"></script>
   </head>
   <body>
     <header class="site">

@@ -23,6 +23,7 @@
     "@wasm-gaming/engine-specs": "^0.3.2"
   },
   "devDependencies": {
+    "coi-serviceworker": "0.1.7",
     "typedoc": "^0.28.20",
     "typescript": "^5.5.0"
   },

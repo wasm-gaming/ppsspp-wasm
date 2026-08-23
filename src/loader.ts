@@ -32,6 +32,33 @@ function glue(): Promise<ModuleFactory> {
 }
 
 /**
+ * What a page must be for the module to start at all.
+ *
+ * PPSSPP is genuinely multi-threaded, the build links with `-pthread`, and Emscripten
+ * implements those threads with `SharedArrayBuffer` — which a browser only exposes to
+ * a **cross-origin isolated** page. Without the isolation the module does not fail
+ * politely: it fails somewhere inside the generated glue with a message that says
+ * nothing about headers, and a host is left debugging the emulator instead of its
+ * server.
+ *
+ * So this is checked before the glue is even imported, and the error names the two
+ * headers and the way out. `=== false` rather than a falsy test on purpose: outside a
+ * browser the global does not exist, and a Node process driving this package through
+ * its own loader has no `SharedArrayBuffer` problem to warn about.
+ */
+function requireIsolation(): void {
+  if (globalThis.crossOriginIsolated === false) {
+    throw new Error(
+      'ppsspp: this page is not cross-origin isolated, so SharedArrayBuffer is unavailable ' +
+        'and the emulator cannot start its threads. Serve it with ' +
+        '`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`. ' +
+        'On a host that cannot set headers — GitHub Pages, for one — a service worker such as ' +
+        'coi-serviceworker can inject them; see native/README.md.',
+    );
+  }
+}
+
+/**
  * Instantiate PPSSPP.
  *
  * Note what is *not* here: `arguments`, and any expectation that the module starts
@@ -40,6 +67,7 @@ function glue(): Promise<ModuleFactory> {
  * game staged before PPSSPP goes looking for either.
  */
 export const loadPpsspp: PpssppLoader = async (init: PpssppModuleInit): Promise<PpssppModule> => {
+  requireIsolation();
   const create = await glue();
   return create({
     canvas: init.canvas,

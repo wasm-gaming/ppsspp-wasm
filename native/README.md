@@ -66,6 +66,56 @@ make wasm-release       # the same, optimised
 `emcc` has to be on `PATH` — the CI job runs in `emscripten/emsdk:5.0.7`.
 Expect around forty minutes on four cores.
 
+### A round is a whole round
+
+Ninja stops at the first error by default, which on a port this size means a ten-minute
+round diagnoses exactly one mistake and hides every other one behind it. `make wasm`
+therefore passes `-k 0`, so ninja builds every target whose inputs are ready and reports
+*all* the independent failures together; the exit status is still non-zero. Pass
+`WASM_KEEP_GOING=` to get the stop-at-first-error behaviour back when bisecting a single
+target.
+
+The CI job (`.github/workflows/wasm.yml`) then keeps its whole output as a `build.log`
+artifact and writes the `FAILED:` lines into the run summary, because a round with fifty
+failures is not something to read by scrolling a web log.
+
+Two things about that job are worth knowing before editing it, because both were learned
+the hard way on the first round:
+
+- **The build step names its shell.** A `run:` step's default shell is `bash -e {0}` —
+  no `pipefail` — so `make wasm-release | tee build.log` reports `tee`'s exit status, and
+  a round with three compile errors comes back **green**. `shell: bash` is what adds
+  `-o pipefail`. The job's verdict is then applied by an explicit final step rather than
+  by the build step itself.
+- **The caches are restored and saved by separate steps.** `actions/cache` saves in a
+  post step guarded by `success()`, so on a red round it saves nothing — and while a port
+  is in progress, *every* round is red. `actions/cache/restore` plus
+  `actions/cache/save` with `if: always()` is what makes a failed round pay for the next
+  one, which is the entire point of caching here.
+
+### What the CI job caches, and why it has to
+
+Two caches, holding different things:
+
+- **ccache**, over this project's own object files, wired up through Emscripten's
+  `EM_COMPILER_WRAPPER` — which puts ccache in front of the *clang* invocation `emcc`
+  finally makes, rather than in front of `emcc`'s Python driver. The upstream tree is
+  re-cloned every round, so `CCACHE_BASEDIR` and a `include_file_mtime` sloppiness
+  setting are what stop a fresh path and a fresh mtime from counting as a change.
+- **`/emsdk/upstream/emscripten/cache`**, holding the toolchain's own libraries: libc,
+  libc++, and the SDL3, freetype and harfbuzz ports. None of them ship prebuilt for the
+  pthreads + SIMD + exceptions variant this build asks for, so a cold runner builds all
+  of them before it reaches a line of PPSSPP.
+
+Both are rolling caches — the key carries the run id and `restore-keys` picks up the
+previous round — because a GitHub cache entry is immutable once written, so a fixed key
+would freeze the first round's misses forever.
+
+Verified end to end. Round 7 proved the wiring — 1073 cacheable compiles, all misses on
+a cold runner, 2146 files written, so `EM_COMPILER_WRAPPER` does reach the real
+compiler. Round 9 proved the payoff: the same build, one patch further, went from
+**9m47s to 2m52s** by restoring what round 8 saved.
+
 ### The shape of the Emscripten branch in CMake
 
 | Choice | Why |
@@ -114,8 +164,23 @@ Cross-Origin-Embedder-Policy: require-corp
 
 A host that cannot set headers — GitHub Pages, for one — needs a service worker that
 injects them. Without isolation the module does not start at all, and the error the
-browser gives says nothing about the cause, so a host should check
-`crossOriginIsolated` and say so plainly.
+browser gives says nothing about the cause.
+
+Two things follow from that, and both are done rather than recommended:
+
+- **`src/loader.ts` checks `crossOriginIsolated`** before it imports the glue, and
+  throws an error naming both headers. `=== false`, not a falsy test: outside a browser
+  the global does not exist, and a Node host driving this package through its own
+  loader has no `SharedArrayBuffer` problem to be warned about.
+- **The demo carries [`coi-serviceworker`](https://github.com/gzuidhof/coi-serviceworker)**
+  (MIT), copied into `site/demo/` by `make site`. It registers a service worker that
+  adds the headers and reloads the page once. It lands beside the page rather than in
+  `site/vendor/` because a service worker's default scope is its own directory — one
+  served from `/vendor/` would not cover `/demo/`.
+
+Verified in a real Chromium against the built site: the page comes back
+`crossOriginIsolated === true` with `SharedArrayBuffer` available, and the demo still
+boots its stub afterwards.
 
 ## The bridge
 
@@ -175,12 +240,20 @@ what makes offering the work upstream a matter of sending the series.
 Rolling forward is: bump `REV` in `UPSTREAM`, run `make native-checkout`, fix whatever
 fails to apply, regenerate.
 
+### Patches that land inside a submodule
+
+`git apply --3way` in the PPSSPP worktree cannot touch a file inside one of its
+submodules: a submodule is a separate repository, and the parent's object database does
+not hold its blobs, so the three-way merge has nothing to merge against. Those patches
+live under `patches/submodules/<submodule path>/` instead, and `make native-checkout`
+applies each one in that submodule's own worktree. `ext/aemu_postoffice` is the first of
+them.
+
 ### 0001 — the Emscripten platform
 
-**Status: configures, and compiles past the first 150 of 1118 targets.** libzip,
-libpng and xxhash build clean, and the SDL3 port downloads and builds — so the flag
-set is sound. That is the whole of what this patch claims. Every hunk is guarded
-by `EMSCRIPTEN`, so no other target changes:
+**Status: configures, and all 1118 targets compile.** The flag set is sound and the
+whole of PPSSPP now builds under Emscripten; what remains is the link. Every hunk is
+guarded by `EMSCRIPTEN`, so no other target changes:
 
 - the platform block itself, which has to sit *before* the `option()` calls because it
   decides their defaults;
@@ -214,23 +287,65 @@ them came back different from what the reference fork suggested:
   (non-wasm code runs slowly across a growing heap). Accepted: PPSSPP cannot fit a
   fixed heap, and it needs its threads.
 
+### 0004, 0005 — two more things upstream never compiled
+
+Both are upstream bugs rather than Emscripten ones, found by being the first build to
+reach the code: 0004 completes the no-SIMD branch of `Common/Math/CrossSIMD.h`
+(`Vec4F32::WithLane3From`, `AnyCompareBitsSet`), and 0005 gives `FakeJit` the
+`GetCodeBase()` that `JitInterface` declares pure virtual — without it
+`CreateNativeJit()` cannot instantiate the class it falls back to on every
+architecture with no native JIT. Both are worth sending upstream on their own, as 0003
+is.
+
+### 0006 — the post office links
+
+`ext/aemu_postoffice/client/postoffice.c` is compiled unconditionally and calls into
+whichever `sock_impl_*.c` the platform list picks. Emscripten sets `UNIX` but not
+`LINUX`, so it picked none, and the link died on `native_close_tcp_sock` and a dozen
+like it. It needs the `SO_NOSIGPIPE` fix in the submodule as well — see above.
+
+### 0007 — sleeping without ASYNCIFY
+
+`sleep_ms`, `sleep_us` and `sleep_precise` in `Common/TimeUtil.cpp` all take an
+`__EMSCRIPTEN__` branch that calls `emscripten_sleep()`. That is an ASYNCIFY
+primitive: in a build without `-sASYNCIFY` it does not sleep, it **aborts the calling
+thread**, which a browser build hits within a second of starting. The branch is a
+leftover from the asm.js era, like the architecture mapping 0002 replaced; it is now
+guarded by `__EMSCRIPTEN_PTHREADS__` so a threaded build takes the POSIX path, where a
+worker can block for real.
+
 ### What is not done
 
-The build itself has not been run to completion anywhere yet. Configure passing means
-the tree is now *buildable* in the sense that ninja has a plan; it says nothing about
-whether a million lines of C++ compile under Emscripten. Expect the real work to be
-there — `Common/CPUDetect`, threading, the file system, and the GL backend are the
-usual places a port of this size bleeds.
+**It links, and it does not run.** All 1118 targets compile, `ppsspp.js`,
+`ppsspp.wasm` and `ppsspp.data` are produced, and the glue exports exactly what
+`../src/module.ts` declares. In a real browser PPSSPP then starts: it registers its
+VFS, reports SDL 3.4.2, and initialises its thread manager — and the tab dies, with
+`callMain()` never returning. That is the signature of a blocked browser main thread,
+which is what `SDL/SDLMain.cpp`'s loop does on every other platform. `-sPROXY_TO_PTHREAD`
+is the candidate fix and does **not** work as a flag flip: the module factory's promise
+never resolves, with `INVOKE_RUN` at either 0 or 1. Linking once with `-sASSERTIONS` is
+the next instrument.
+
+**SDL3 takes the canvas by CSS selector.** Its Emscripten video driver reads
+`SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`, defaulting to `#canvas`, and fails window
+creation outright when nothing matches — `SDLGLGraphicsContext::InitSurface: no window
+or GL context` is what that looks like. SDL2 took the element from `Module.canvas`;
+SDL3 does not, so the note in `../src/module.ts` about the canvas is out of date and
+this is a contract question: the SDK builds a new canvas per restart and cannot call
+them all `canvas`.
 
 The bridge in the next section is also still unwritten, so nothing exports
 `ppsspp_web_*` yet and `-sEXPORTED_FUNCTIONS` is deliberately absent: naming a symbol
 that does not exist is a link error.
 
 **Note for anyone building in this repository's own agent sandbox:** the Emscripten
-SDL3 port is fetched from `https://github.com/libsdl-org/SDL/archive/release-3.4.2.zip`,
-and that URL is refused (HTTP 403) by the sandbox's egress policy, so a local build
-stops at the first compile. CI has no such restriction — `Build wasm` is where the
-compile actually gets attempted.
+ports (SDL3, SDL3_ttf, freetype, harfbuzz, zlib) are fetched from GitHub *archive*
+URLs, and those are refused (HTTP 403) by the sandbox's egress policy while `git`
+reads of the same repositories are allowed. A local build is still possible: clone
+each project at the tag its port pins into
+`<emsdk>/upstream/emscripten/cache/ports/<name>/<expected subdir>` and write the
+port's URL into `<...>/ports/<name>/.emscripten_url`, which is the marker
+`fetch_port_artifact` checks before downloading anything. CI has no such restriction.
 
 ## Known to be missing
 

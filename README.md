@@ -85,7 +85,11 @@ Worth knowing before the first surprise:
 - **The page must be cross-origin isolated.** PPSSPP is multi-threaded, threads mean
   `SharedArrayBuffer`, and that means `Cross-Origin-Opener-Policy: same-origin` and
   `Cross-Origin-Embedder-Policy: require-corp`. Without them the module does not start,
-  and the browser's own error says nothing about why.
+  and the browser's own error says nothing about why — so the default loader checks
+  `crossOriginIsolated` before it imports the glue and refuses with an error that names
+  both headers. On a host that cannot set them, [GitHub Pages included, a service worker
+  such as `coi-serviceworker`](https://github.com/gzuidhof/coi-serviceworker) injects
+  them; that is what the demo does.
 - **There is no JIT, and there cannot be.** WebAssembly has no runtime code
   generation, so what runs is PPSSPP's IR interpreter. `config.internalResolution` is
   the lever that decides whether a title is playable.
