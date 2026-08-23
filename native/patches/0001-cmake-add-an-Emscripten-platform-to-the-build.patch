@@ -1,0 +1,150 @@
+Subject: [PATCH 1/2] cmake: add an Emscripten platform to the build
+
+Upstream has no Emscripten support: its toolchain file sets UNIX, so an
+unpatched configure treats a browser as a Linux desktop, looks for X11,
+Wayland and a system SDL3, and dies on the last of those.
+
+Every hunk is guarded by EMSCRIPTEN, so no other target changes.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 922889fdf..5cdf418a5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -104,8 +104,34 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Android")
+ 	set(ANDROID ON)
+ endif()
+ 
++# WebAssembly, through Emscripten.
++#
++# This has to come before the `option()` calls below, because it decides the defaults
++# they read. Emscripten's toolchain file sets UNIX, so without this every `if(UNIX ...)`
++# further down treats a browser as a Linux desktop and goes looking for X11, Wayland and
++# a system SDL3.
++if(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
++	set(EMSCRIPTEN ON)
++	# WebAssembly has no runtime code generation, so none of the JIT backends can be
++	# built at all. What runs is the IR interpreter, and forcing the architecture flags
++	# off here is what keeps the emitters out of the build rather than failing to
++	# assemble them later.
++	set(X86_DEVICE OFF)
++	set(X86_64_DEVICE OFF)
++	set(X86 OFF CACHE BOOL "" FORCE)
++	set(X86_64 OFF CACHE BOOL "" FORCE)
++	set(ARM OFF CACHE BOOL "" FORCE)
++	set(ARM64 OFF CACHE BOOL "" FORCE)
++	# WebGL is reached through the GLES path, and there is no EGL in a browser.
++	set(USING_EGL OFF)
++	set(USING_GLES2 ON)
++endif()
++
+ # We only support Vulkan on Unix, macOS (by MoltenVK), Android and Windows.
+-if(ANDROID OR WIN32 OR (UNIX AND NOT ARM_NO_VULKAN))
++# Emscripten reports UNIX, hence the explicit exclusion: there is no Vulkan in a
++# browser, and leaving it on is also what would send the X11 and Wayland searches below
++# looking for desktop libraries that are not there.
++if((ANDROID OR WIN32 OR (UNIX AND NOT ARM_NO_VULKAN)) AND NOT EMSCRIPTEN)
+ 	set(VULKAN ON)
+ endif()
+ 
+@@ -294,7 +320,66 @@ include_directories(ext/glslang)
+ # Anyway, glew will be going away anyway.
+ include_directories(ext/glew)
+ 
+-if(OPENXR AND NOT ARMV7_DEVICE)
++if(EMSCRIPTEN)
++	set(WASM_INITIAL_MEMORY "536870912" CACHE STRING "Initial WebAssembly memory, in bytes")
++	set(WASM_MAXIMUM_MEMORY "4294967296" CACHE STRING "Maximum WebAssembly memory, in bytes")
++	option(WASM_PRELOAD_ASSETS "Package PPSSPP's assets into the Emscripten .data file" ON)
++
++	# PPSSPP's GLES3 backend maps onto WebGL2. WebGL1 is not enough for it, so both
++	# bounds are pinned rather than left to negotiate.
++	set(OPENGL_LIBRARIES "-sMIN_WEBGL_VERSION=2" "-sMAX_WEBGL_VERSION=2")
++
++	# `ext/armips` vendors ghc::filesystem, which detects its host from __linux__,
++	# __APPLE__, _WIN32 and friends — and Emscripten defines none of them, so it stops
++	# at `#error "Operating system currently not supported!"`. Its whole detection block
++	# is guarded by GHC_OS_DETECTED, so saying so from here selects the POSIX path
++	# without patching a header that lives inside a submodule of a submodule, where a
++	# patch series cannot reach it cleanly. Emscripten's libc is musl-derived, so the
++	# Linux path is the correct one rather than merely the one that compiles.
++	add_compile_definitions(GHC_OS_DETECTED GHC_OS_LINUX)
++
++	# Compile *and* link: pthreads and exceptions change the ABI, so a mismatch between
++	# the two shows up as undefined symbols at the very end of a forty-minute build.
++	# `-msimd128` only. No `-msse`/`-msse2`: with PPSSPP_ARCH_WASM in ppsspp_config.h
++	# nothing reaches for x86 intrinsics any more, so enabling their translation would
++	# advertise a capability this build does not use.
++	add_compile_options(-pthread -msimd128 -fexceptions)
++	add_link_options(-pthread -msimd128 -fexceptions)
++
++	add_link_options("-sFULL_ES3=1" "-sGL_ENABLE_GET_PROC_ADDRESS=1")
++	add_link_options("-sALLOW_MEMORY_GROWTH=1"
++		"-sINITIAL_MEMORY=${WASM_INITIAL_MEMORY}"
++		"-sMAXIMUM_MEMORY=${WASM_MAXIMUM_MEMORY}")
++	# 64-bit values cross the JS boundary whole instead of being split in two.
++	add_link_options("-sWASM_BIGINT=1")
++	# How a game ISO is mounted without ever being read into the heap.
++	add_link_options("-lworkerfs.js" "-lidbfs.js")
++
++	# The three that this package's SDK depends on, and that no other Emscripten build
++	# of PPSSPP needs:
++	#   MODULARIZE/EXPORT_ES6 — a module per session, so restart() can build a second
++	#     one. Without it there is one global module and one boot per page.
++	#   INVOKE_RUN=0 — main() waits for callMain(), because the memory stick has to be
++	#     mounted and the game staged before PPSSPP goes looking for either.
++	add_link_options("-sMODULARIZE=1" "-sEXPORT_ES6=1" "-sINVOKE_RUN=0")
++	add_link_options("-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,IDBFS,WORKERFS,PThread")
++	# Only names Emscripten itself knows: this is an allowlist of the *runtime's* own
++	# incoming properties, and emcc warns about anything else. It is not a filter on the
++	# object a host passes in — MODULARIZE does `var Module = moduleArg`, so
++	# `pthreadPoolSize` and `ppssppEvent` arrive on Module regardless and are reachable
++	# from C++. Verified against the emitted glue.
++	add_link_options("-sINCOMING_MODULE_JS_API=canvas,locateFile,print,printErr,onAbort,preRun,onRuntimeInitialized")
++	# A link-time pool size that follows a runtime decision: the SDK sets
++	# Module.pthreadPoolSize before instantiating, and this expression reads it. Emitted
++	# verbatim into the glue, so `config.threads` really does size the worker pool.
++	add_link_options("-sPTHREAD_POOL_SIZE=Module['pthreadPoolSize']||Math.max(4,navigator.hardwareConcurrency||4)")
++
++	if(WASM_PRELOAD_ASSETS)
++		# The fonts, shaders and UI atlas have to exist in the file system before
++		# PPSSPP starts, so they are baked into the .data file rather than fetched.
++		add_link_options("--preload-file" "${CMAKE_SOURCE_DIR}/assets@${CMAKE_INSTALL_FULL_DATADIR}/ppsspp/assets")
++	endif()
++elseif(OPENXR AND NOT ARMV7_DEVICE)
+ 	set(OPENGL_LIBRARIES GLESv3 EGL)
+ elseif(NOT OPENGL_LIBRARIES AND USING_GLES2)
+ 	set(OPENGL_LIBRARIES GLESv2 EGL)
+@@ -318,7 +403,19 @@ set(SDL_LIB_TARGET "")
+ set(SDL_TTF_LIB_TARGET "")
+ set(FONTCONFIG_LIB_TARGET "")
+ 
+-if(NOT LIBRETRO AND NOT IOS AND NOT LOONGARCH64_DEVICE AND NOT ANDROID)
++if(EMSCRIPTEN)
++	# Emscripten ships SDL3 and SDL3_ttf as *ports*: `-sUSE_SDL=3` and `-sUSE_SDL_TTF=3`
++	# put the headers and a prebuilt static library in place at compile and link time.
++	# That is not a CMake config package, so `find_package(SDL3)` can never find it —
++	# which is exactly why the unpatched tree dies here. The link targets stay empty on
++	# purpose; the flags are what pull SDL in.
++	set(SDL_LIB_TARGET "")
++	set(SDL_TTF_LIB_TARGET "")
++	add_compile_options("-sUSE_SDL=3" "-sUSE_SDL_TTF=3")
++	add_link_options("-sUSE_SDL=3" "-sUSE_SDL_TTF=3")
++	add_compile_definitions(USE_SDL3_TTF)
++	message(STATUS "Using the Emscripten SDL3 and SDL3_ttf ports")
++elseif(NOT LIBRETRO AND NOT IOS AND NOT LOONGARCH64_DEVICE AND NOT ANDROID)
+ 	find_package(SDL3 QUIET)
+ 	if(NOT SDL3_FOUND)
+ 		if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (EXISTS "/usr/bin/apt" OR EXISTS "/usr/bin/apt-get" OR EXISTS "/etc/debian_version"))
+@@ -1494,6 +1591,12 @@ if(TargetBin)
+ 	else()
+ 		add_executable(${TargetBin} ${NativeAppSource})
+ 	endif()
++	if(EMSCRIPTEN)
++		# `ppsspp.js` beside `ppsspp.wasm`, rather than the target's own name: the
++		# consuming SDK resolves the glue by a fixed path relative to itself, and a
++		# frontend rename upstream must not become a broken import downstream.
++		set_target_properties(${TargetBin} PROPERTIES OUTPUT_NAME "ppsspp" SUFFIX ".js")
++	endif()
+ 	if(targetExtra)
+ 		target_sources(${TargetBin} PRIVATE ${targetExtra})
+ 	endif()

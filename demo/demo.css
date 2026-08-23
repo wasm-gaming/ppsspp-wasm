@@ -1,0 +1,164 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0d12;
+  --panel: #12151c;
+  --line: #232936;
+  --text: #d7dde8;
+  --dim: #8b949e;
+  --accent: #58a6ff;
+  --warn: #d29922;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 2rem 1.5rem 3rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+.site { max-width: 76rem; margin: 0 auto 2rem; }
+.site h1 { margin: 0 0 .35rem; font-size: 1.4rem; font-weight: 650; }
+.site p { margin: .35rem 0; color: var(--dim); max-width: 62ch; }
+.site strong { color: var(--text); font-weight: 600; }
+.warn { color: var(--warn); }
+code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: .9em; }
+
+main {
+  max-width: 76rem;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22rem;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.stage {
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  aspect-ratio: 480 / 272;
+  display: grid;
+}
+
+.stage canvas { width: 100%; height: 100%; display: block; }
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  align-items: center;
+  margin: .85rem 0;
+}
+
+button {
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: .85rem;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .35rem .7rem;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+
+.status {
+  margin-left: auto;
+  font-family: ui-monospace, monospace;
+  font-size: .8rem;
+  color: var(--accent);
+}
+
+.log {
+  margin: 0;
+  padding: .75rem;
+  height: 15rem;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: .75rem;
+  line-height: 1.5;
+  color: var(--dim);
+  white-space: pre-wrap;
+}
+
+/* The panel is much taller than the viewport it sits beside. Sticky with its own
+   scroll keeps the emulator and the log in view while the settings are read. */
+aside {
+  position: sticky;
+  top: 2rem;
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+aside h2 { margin: 0 0 .75rem; font-size: .95rem; font-weight: 600; }
+
+.panel { display: grid; gap: 1rem; }
+
+fieldset {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: .5rem .85rem .85rem;
+}
+
+legend {
+  padding: 0 .35rem;
+  font-family: ui-monospace, monospace;
+  font-size: .72rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.row { display: grid; gap: .25rem; padding: .5rem 0; border-top: 1px solid var(--line); }
+.row:first-of-type { border-top: 0; }
+
+.name {
+  font-family: ui-monospace, monospace;
+  font-size: .78rem;
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+
+.name em {
+  font-style: normal;
+  font-size: .62rem;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--warn);
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0 .3rem;
+}
+
+.row small { color: var(--dim); font-size: .72rem; line-height: 1.4; }
+
+input, select {
+  font: inherit;
+  font-size: .8rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: .3rem .45rem;
+  width: 100%;
+}
+input[type='checkbox'] { width: auto; accent-color: var(--accent); }
+input[type='file'] { padding: .25rem; font-size: .72rem; }
+
+@media (max-width: 60rem) {
+  main { grid-template-columns: minmax(0, 1fr); }
+  /* Stacked, a sticky panel would pin itself over the emulator. */
+  aside { position: static; max-height: none; overflow: visible; }
+}

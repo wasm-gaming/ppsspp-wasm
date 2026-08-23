@@ -1,0 +1,18 @@
+node_modules/
+dist/
+site/
+*.tsbuildinfo
+.DS_Store
+.vscode/
+
+# The Emscripten build tree and its output. `make wasm` regenerates both; the
+# artifacts are tens of megabytes and are published as releases, never committed.
+build-wasm/
+build-wasm-release/
+src/native/
+
+# The upstream checkout `make native-checkout` creates. It is a pinned clone, not a
+# submodule (see native/README.md), so git must not try to track it.
+native/ppsspp/
+
+.tmp/

@@ -1,0 +1,54 @@
+# Building PPSSPP itself.
+#
+# Deliberately not part of the PR build: this is a ~40 minute Emscripten compile of a
+# million-line C++ codebase, and the contract implementation in src/ does not depend on
+# its output — it is written against the interface in src/module.ts and tested against
+# a fake. Running it on every pull request would buy nothing and cost an hour.
+name: Build wasm
+
+# Manual only, and it stays that way until native/patches/ actually contains the
+# Emscripten port. Upstream PPSSPP has no Emscripten support, so an unpatched tree
+# cannot configure, let alone build: a push trigger here would do nothing but burn
+# forty minutes and paint every branch red. Add the push trigger in the same commit
+# that makes this able to pass.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wasm
+  cancel-in-progress: true
+
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:5.0.7
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ninja-build ca-certificates
+
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # Fetches the revision pinned in native/UPSTREAM and applies native/patches/.
+      - name: Check out PPSSPP
+        run: make native-checkout
+
+      - name: Build
+        run: make wasm-release
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppsspp-wasm
+          path: src/native/
+          if-no-files-found: error

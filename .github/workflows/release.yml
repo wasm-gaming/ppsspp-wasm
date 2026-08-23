@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dist_tag:
+        # `next` is the default, and deliberately so. Until native/ produces a build,
+        # this package is the contract layer alone: `loadPpsspp` resolves an Emscripten
+        # glue that is not in the tarball, so `new PpssppSDK().start()` cannot work in a
+        # browser. Publishing that to `latest` would mean `npm i @wasm-gaming/ppsspp-wasm`
+        # hands someone an engine that cannot run, which is worse than handing them
+        # nothing. Choose `latest` in the same release that ships the emulator.
+        description: npm dist-tag (`next` until the emulator ships)
+        required: true
+        default: next
+        type: choice
+        options:
+          - next
+          - latest
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # The same checks a push runs, against the commit about to be released.
+  build:
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: write # push the version commit and tag
+      id-token: write # npm provenance
+
+    outputs:
+      tag: ${{ steps.bump_version.outputs.new_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          scope: '@wasm-gaming'
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure Git
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+
+      - name: Bump version, commit, and tag
+        id: bump_version
+        run: |
+          NEW_TAG=$(npm version "${{ inputs.bump }}" -m "chore(release): %s")
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Push commit and tag
+        run: git push origin HEAD --follow-tags
+
+      # After the bump, so dist/ is built from the version being published.
+      - name: Build
+        run: make build
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance --tag "${{ inputs.dist_tag }}"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump_version.outputs.new_tag }}
+          name: ${{ steps.bump_version.outputs.new_tag }}
+          generate_release_notes: true
+          # A release of the contract layer alone is not the emulator, and the listing
+          # should not let anyone assume otherwise.
+          prerelease: ${{ inputs.dist_tag == 'next' }}
+
+  # Separate job because Pages wants its own permissions and environment, and because
+  # it must build from the *bumped* commit: typedoc stamps the version onto every page,
+  # so a site built before the bump would publish the old one.
+  pages:
+    needs: publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.publish.outputs.tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The API reference at /, and the demo at /demo/ — which drives the real SDK
+      # against a stub module, and says so on the page.
+      - name: Build site (reference at /, demo at /demo/)
+        run: make site
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

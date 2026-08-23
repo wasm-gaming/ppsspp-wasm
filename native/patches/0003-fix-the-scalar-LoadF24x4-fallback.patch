@@ -1,0 +1,27 @@
+Subject: [PATCH 3/3] Common/Math: fix the scalar LoadF24x4 fallback
+
+The no-SIMD branch of CrossSIMD.h called LoadR24x3_One, which does not
+exist anywhere in the tree — LoadF24x3_One does. The branch only compiles
+on a target with neither SSE nor NEON, which is why it has gone unnoticed.
+
+Correcting the name alone would compile and be wrong: the SSE and NEON
+LoadF24x4 shift all four lanes left by 8, while LoadF24x3_One loads three
+and zeroes W. This implements the four-lane semantics the other three
+backends share.
+
+diff --git a/Common/Math/CrossSIMD.h b/Common/Math/CrossSIMD.h
+index af30c25b0..bab907de3 100644
+--- a/Common/Math/CrossSIMD.h
++++ b/Common/Math/CrossSIMD.h
+@@ -1679,7 +1679,10 @@ struct Vec4F32 {
+ 	}
+ 
+ 	static Vec4F32 LoadF24x4(const uint32_t *src) {
+-		return LoadR24x3_One(src);
++		uint32_t shifted[4] = { src[0] << 8, src[1] << 8, src[2] << 8, src[3] << 8 };
++		Vec4F32 temp;
++		memcpy(temp.v, shifted, sizeof(temp.v));
++		return temp;
+ 	}
+ 
+ 	static Vec4F32 FromVec4S32(Vec4S32 src) {

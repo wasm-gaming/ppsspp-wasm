@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@wasm-gaming/ppsspp-wasm — the contract, driven</title>
+    <link rel="stylesheet" href="demo.css" />
+  </head>
+  <body>
+    <header class="site">
+      <h1>@wasm-gaming/ppsspp-wasm</h1>
+      <p>
+        PPSSPP as an engine the wasm-gaming contract can drive. The panel on the right is built
+        <strong>entirely from the engine's own descriptors</strong> — this page contains no PPSSPP
+        setting names at all.
+      </p>
+      <p class="warn">
+        The emulator underneath is a stub. Building PPSSPP itself is a forty-minute Emscripten
+        compile whose artifacts are published as releases rather than committed — see
+        <code>native/README.md</code>. Everything above the stub is the real SDK.
+      </p>
+    </header>
+
+    <main>
+      <section class="viewport">
+        <div id="stage" class="stage"></div>
+        <div class="toolbar">
+          <button id="standin" type="button" title="An anonymous Blob with CISO magic bytes — no name, so the format is sniffed from its contents">stand-in game</button>
+          <button id="start" type="button">start()</button>
+          <button id="restart" type="button">restart()</button>
+          <button id="pause" type="button">pause()</button>
+          <button id="resume" type="button">resume()</button>
+          <button id="destroy" type="button">destroy()</button>
+          <span id="status" class="status">idle</span>
+        </div>
+        <pre id="log" class="log"></pre>
+      </section>
+
+      <aside>
+        <h2>Settings, painted from descriptors</h2>
+        <div id="panel" class="panel"></div>
+      </aside>
+    </main>
+
+    <!--
+      The SDK imports the contract by name, and a browser cannot resolve a bare
+      specifier on its own. `make site` copies the contract's built module into
+      site/vendor/, and this map is what points the import at it — no bundler involved,
+      which is the point: what runs here is the published artifact, unmodified.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@wasm-gaming/engine-specs": "../vendor/engine-specs.js"
+        }
+      }
+    </script>
+    <script type="module" src="demo.js"></script>
+  </body>
+</html>
