@@ -6,8 +6,10 @@ Check [STACK.md](STACK.md).
 
 ## Sessions
 
-Every session is recorded in [`SESSIONS/`](./SESSIONS/), named
-`YYYY-MM-DD_HHhMM.<kebab-case-summary>.session.md`, in English.
+Work is recorded in [`SESSIONS/`](./SESSIONS/), one file per **body of work** — not one per
+sitting. A file is opened when a piece of work starts, named
+`YYYY-MM-DD_HHhMM.<kebab-case-summary>.session.md` for the moment it was opened, and written in
+English. Several sessions may extend the same file; one session may open more than one.
 
 Two rules, and they pull in different directions on purpose:
 
@@ -26,12 +28,33 @@ Two rules, and they pull in different directions on purpose:
   | `Bugs found by building, not by reading` | Defects the *process* surfaced, with their cause. These are the ones that get re-introduced otherwise. |
   | `Verified, and not` | Two explicit lists. The second one matters more: name the caveat and the risk taken. |
   | `Loose ends, deliberately left` | What was not done, and what it would cost. |
+  | `Next` | What remains. Without it a session file is a diary; with it, the folder is a plan. |
 
-**Always append, never rewrite.** Extensions are `## Extension · <date> · <summary>`, corrections
-are `### Correction · …`. When a decision supersedes an earlier one, say so out loud in the new
-text and leave the old text standing — a session file that has been edited to look right is worth
-nothing, because the wrong turns are most of the value. The SSE-versus-architecture reversal in
-the 2026-08-23 file is the worked example.
+### Closing a file
+
+When everything a file set out to do is done:
+
+1. **Append a final `## Walkthrough · as completed`** — what actually landed across the whole
+   body of work, not a summary of what was planned.
+2. **Rename it from `.session.md` to `.session.completed.md`.**
+
+So `SESSIONS/` read at a glance answers the two questions that matter: `*.session.md` is what is
+still open, `*.session.completed.md` is what is finished and why. Nothing is deleted, and nothing
+moves out of the folder.
+
+A file is only closed when its `Next` is empty. If part of the work is being abandoned rather
+than finished, say so in the walkthrough — an abandoned item closed quietly is indistinguishable
+from a forgotten one.
+
+### Always append, never rewrite
+
+Extensions are `## Extension · <date> · <summary>`, corrections are `### Correction · …`. When a
+decision supersedes an earlier one, say so out loud in the new text and leave the old text
+standing — a session file edited to look right is worth nothing, because the wrong turns are most
+of the value. The SSE-versus-architecture reversal in the 2026-08-23 file is the worked example.
+
+This rule governs `SESSIONS/` only. Documents that describe how things *are* — this file,
+`README.md`, `STACK.md`, `native/README.md` — are kept correct by editing them.
 
 ## What this repository is
 
