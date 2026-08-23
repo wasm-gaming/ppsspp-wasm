@@ -99,6 +99,20 @@ export const loadPpsspp: PpssppLoader = async (init: PpssppModuleInit): Promise<
     // A host that knows better still wins; the default is only what makes the module
     // find its own files when nobody says otherwise.
     locateFile: init.locateFile ?? besideTheGlue,
+    // Seeded so that SDL3 can overwrite it, and for no other reason.
+    //
+    // `Emscripten_CreateWindow` ends with a MAIN_THREAD_EM_ASM that does
+    // `Module['requestFullscreen'] = ...`, to route the browser's own fullscreen button
+    // through SDL. Under `-sASSERTIONS` Emscripten installs a getter-only tripwire on
+    // every runtime symbol missing from `-sEXPORTED_RUNTIME_METHODS`, and this build's
+    // export list is deliberately narrow — so that assignment throws
+    // "Cannot set property requestFullscreen of #<Object> which has only a getter",
+    // from inside SDL, after the window has already been created.
+    //
+    // An own property, however dull, is what stops the tripwire being installed. In a
+    // build without assertions this line changes nothing; with them it is the
+    // difference between an instrument that observes the port and one that breaks it.
+    requestFullscreen: undefined,
     ...(init.print ? { print: init.print } : {}),
     ...(init.printErr ? { printErr: init.printErr } : {}),
     ...(init.onAbort ? { onAbort: init.onAbort } : {}),

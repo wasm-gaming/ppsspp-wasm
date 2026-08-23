@@ -108,6 +108,10 @@ const HARNESS = `<!doctype html>
       // it forever. src/loader.ts defaults to exactly this; the harness says it out
       // loud because here there is no loader in the way.
       locateFile: (path) => '/native/' + path,
+      // See src/loader.ts: SDL3 assigns Module['requestFullscreen'], and -sASSERTIONS
+      // turns every unexported runtime symbol into a getter-only tripwire. The harness
+      // bypasses the loader, so it seeds the same property itself.
+      requestFullscreen: undefined,
       print: (t) => keep('stdout', t),
       printErr: (t) => keep('stderr', t),
       onAbort: (what) => { state.error = 'abort: ' + what; say({ kind: 'abort', text: String(what) }); },
