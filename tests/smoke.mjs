@@ -262,7 +262,19 @@ function connect(wsUrl) {
 
 // ---------------------------------------------------------------------------
 const log = [];
+// Emscripten's "still waiting on run dependencies" diagnostic lists every preloaded
+// file, and repeats every few seconds — around a thousand lines of it in a two-minute
+// run, which buries the transcript that matters. The count is the information; the file
+// names are not. Kept as one line per dump.
+let depRun = 0;
 const record = (kind, text) => {
+  if (/^dependency: fp /.test(text)) { depRun++; return; }
+  if (depRun && !/^dependency: /.test(text)) {
+    const line = `[deps] ...and ${depRun} preloaded files still pending`;
+    log.push(line);
+    console.log(line);
+    depRun = 0;
+  }
   const line = `[${kind}] ${text}`;
   log.push(line);
   console.log(line);
@@ -289,6 +301,9 @@ async function main() {
 
   let crashed = false;
   const stages = [];
+  const inflight = new Map();
+  const served = new Map();
+  const broken = [];
   browser.on((msg) => {
     if (msg.sessionId !== sessionId) return;
     const p = msg.params ?? {};
@@ -309,6 +324,32 @@ async function main() {
       case 'Log.entryAdded':
         record('log:' + p.entry.level, p.entry.text);
         break;
+      case 'Network.requestWillBeSent':
+        inflight.set(p.requestId, p.request.url);
+        break;
+      case 'Network.responseReceived':
+        if (p.response.status >= 400) {
+          // A 4xx whose body nobody reads never reports loadingFinished, so it has to
+          // be moved out of "in flight" here or it gets reported as a slow fetch.
+          inflight.delete(p.requestId);
+          if (!/\/favicon\.ico$/.test(p.response.url)) {
+            broken.push(`${p.response.status} ${p.response.url}`);
+            record('http', `${p.response.status} ${p.response.url}`);
+          }
+        } else {
+          served.set(p.response.url, p.response.status);
+        }
+        break;
+      case 'Network.loadingFinished':
+        inflight.delete(p.requestId);
+        break;
+      case 'Network.loadingFailed': {
+        const what = `${inflight.get(p.requestId) ?? p.requestId}: ${p.errorText}${p.blockedReason ? ' (' + p.blockedReason + ')' : ''}`;
+        broken.push(what);
+        record('http', 'FAILED ' + what);
+        inflight.delete(p.requestId);
+        break;
+      }
       case 'Inspector.targetCrashed':
         crashed = true;
         record('CRASH', 'the renderer process died');
@@ -316,6 +357,11 @@ async function main() {
     }
   });
 
+  // The Network domain earns its place: the first real run of this instrument stopped
+  // at "instantiating" and the transcript could not say whether a fetch had 404'd or
+  // was simply still in flight. A module that never finishes coming up is nearly always
+  // waiting on a file, so the file is what has to be reported.
+  await browser.send('Network.enable', {}, sessionId);
   await browser.send('Runtime.enable', {}, sessionId);
   await browser.send('Log.enable', {}, sessionId);
   await browser.send('Page.enable', {}, sessionId);
@@ -374,7 +420,16 @@ async function main() {
     verdict = `FAILED — ${probe.error}`;
     code = 1;
   } else if (probe.stage !== 'returned') {
-    verdict = `STOPPED at "${probe.stage}" — see the transcript above.`;
+    // A module that never finishes coming up is nearly always waiting on a file, so a
+    // request that failed outranks one that is merely slow.
+    const pending = [...inflight.values()].filter((u) => !/\/favicon\.ico$/.test(u));
+    verdict =
+      `STOPPED at "${probe.stage}" — the main thread is alive (${probe.heartbeat} heartbeats), so this is a wait and not a freeze. ` +
+      (broken.length
+        ? `A request it needed did not arrive: ${broken.join('; ')}.`
+        : pending.length
+          ? `Still fetching: ${pending.join(', ')}.`
+          : 'Nothing is outstanding on the network, so it is waiting on something else.');
     code = 1;
   } else if (probe.loopTurns === 0) {
     verdict = 'ALIVE BUT STALLED — callMain returned and the main thread answers, but the browser never handed it back to the page.';
