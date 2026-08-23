@@ -302,13 +302,35 @@ whichever `sock_impl_*.c` the platform list picks. Emscripten sets `UNIX` but no
 `LINUX`, so it picked none, and the link died on `native_close_tcp_sock` and a dozen
 like it. It needs the `SO_NOSIGPIPE` fix in the submodule as well — see above.
 
+### 0007 — sleeping without ASYNCIFY
+
+`sleep_ms`, `sleep_us` and `sleep_precise` in `Common/TimeUtil.cpp` all take an
+`__EMSCRIPTEN__` branch that calls `emscripten_sleep()`. That is an ASYNCIFY
+primitive: in a build without `-sASYNCIFY` it does not sleep, it **aborts the calling
+thread**, which a browser build hits within a second of starting. The branch is a
+leftover from the asm.js era, like the architecture mapping 0002 replaced; it is now
+guarded by `__EMSCRIPTEN_PTHREADS__` so a threaded build takes the POSIX path, where a
+worker can block for real.
+
 ### What is not done
 
-**Nothing has linked yet.** All 1118 targets compile; the final `ppsspp.js` link is
-where the work now is, and `SDL/SDLMain.cpp` is the known obstacle: its main loop
-blocks the thread it runs on, which is the one thing a browser's main thread cannot
-do. Either `-sPROXY_TO_PTHREAD` or an `emscripten_set_main_loop` rewrite; that
-decision is not made yet.
+**It links, and it does not run.** All 1118 targets compile, `ppsspp.js`,
+`ppsspp.wasm` and `ppsspp.data` are produced, and the glue exports exactly what
+`../src/module.ts` declares. In a real browser PPSSPP then starts: it registers its
+VFS, reports SDL 3.4.2, and initialises its thread manager — and the tab dies, with
+`callMain()` never returning. That is the signature of a blocked browser main thread,
+which is what `SDL/SDLMain.cpp`'s loop does on every other platform. `-sPROXY_TO_PTHREAD`
+is the candidate fix and does **not** work as a flag flip: the module factory's promise
+never resolves, with `INVOKE_RUN` at either 0 or 1. Linking once with `-sASSERTIONS` is
+the next instrument.
+
+**SDL3 takes the canvas by CSS selector.** Its Emscripten video driver reads
+`SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`, defaulting to `#canvas`, and fails window
+creation outright when nothing matches — `SDLGLGraphicsContext::InitSurface: no window
+or GL context` is what that looks like. SDL2 took the element from `Module.canvas`;
+SDL3 does not, so the note in `../src/module.ts` about the canvas is out of date and
+this is a contract question: the SDK builds a new canvas per restart and cannot call
+them all `canvas`.
 
 The bridge in the next section is also still unwritten, so nothing exports
 `ppsspp_web_*` yet and `-sEXPORTED_FUNCTIONS` is deliberately absent: naming a symbol

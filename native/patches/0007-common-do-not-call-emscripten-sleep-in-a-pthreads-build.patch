@@ -1,0 +1,58 @@
+Subject: [PATCH 7/7] Common: do not call emscripten_sleep() in a pthreads build
+
+sleep_ms(), sleep_us() and sleep_precise() all take an __EMSCRIPTEN__ branch
+that calls emscripten_sleep(). That is an ASYNCIFY primitive: in a build
+without -sASYNCIFY it does not sleep, it aborts the calling thread with
+
+    Aborted(Please compile your program with async support in order to use
+    asynchronous operations like emscripten_sleep)
+
+which is what a browser build hits within a second of starting, on whichever
+worker sleeps first.
+
+The branch reads like a leftover from the asm.js era, when Emscripten had no
+threads and blocking anywhere was impossible. With -pthread the threads that
+sleep here are workers, and a worker can block for real — so a threaded build
+takes the POSIX path like every other threaded platform. The single-threaded
+branch is left as it was, guarded by __EMSCRIPTEN_PTHREADS__.
+
+diff --git a/Common/TimeUtil.cpp b/Common/TimeUtil.cpp
+index e01c3108e..2d01bb7cb 100644
+--- a/Common/TimeUtil.cpp
++++ b/Common/TimeUtil.cpp
+@@ -305,7 +305,12 @@ void sleep_ms(int ms, const char *reason) {
+ 	Sleep(ms);
+ #elif defined(HAVE_LIBNX)
+ 	svcSleepThread(ms * 1000000);
+-#elif defined(__EMSCRIPTEN__)
++#elif defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
++	// emscripten_sleep() is an ASYNCIFY primitive: without -sASYNCIFY it does not sleep,
++	// it aborts the calling thread at runtime. That is survivable only for a
++	// single-threaded build, which is what this branch is left for. A build with
++	// -pthread sleeps on a worker, and a worker can block for real, so it takes the
++	// POSIX path below like every other threaded platform.
+ 	emscripten_sleep(ms);
+ #else
+ 	usleep(ms * 1000);
+@@ -323,8 +328,8 @@ void sleep_us(int us, const char *reason) {
+ 	Sleep(us / 1000);
+ #elif defined(HAVE_LIBNX)
+ 	svcSleepThread(us * 1000);
+-#elif defined(__EMSCRIPTEN__)
+-	emscripten_sleep(us / 1000);
++#elif defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
++	emscripten_sleep(us / 1000);  // See sleep_ms().
+ #else
+ 	usleep(us);
+ #endif
+@@ -380,8 +385,8 @@ void sleep_precise(double seconds, const char *reason) {
+ 	// On other platforms, we just do a conversion with more input precision than in sleep_ms which is restricted to whole milliseconds.
+ #elif defined(HAVE_LIBNX)
+ 	svcSleepThread((int64_t)(seconds * 1000000000.0));
+-#elif defined(__EMSCRIPTEN__)
+-	emscripten_sleep(seconds * 1000.0);
++#elif defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
++	emscripten_sleep(seconds * 1000.0);  // See sleep_ms().
+ #else
+ 	usleep(seconds * 1000000.0);
+ #endif
