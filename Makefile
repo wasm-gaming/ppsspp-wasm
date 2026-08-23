@@ -77,7 +77,9 @@ native-checkout:
 	fi
 	git -C "$(NATIVE_DIR)" fetch --filter=blob:none origin "$(UPSTREAM_REV)"
 	git -C "$(NATIVE_DIR)" checkout --force --detach "$(UPSTREAM_REV)"
-	git -C "$(NATIVE_DIR)" submodule update --init --recursive --depth 1
+	@# --force so a second run resets a worktree the submodule patches below dirtied,
+	@# which is what makes `make native-checkout` repeatable rather than one-shot.
+	git -C "$(NATIVE_DIR)" submodule update --init --recursive --force --depth 1
 	@# The patch series is the whole of what this project changes about PPSSPP.
 	@if ls native/patches/*.patch >/dev/null 2>&1; then \
 		git -C "$(NATIVE_DIR)" apply --3way $(addprefix $(CURDIR)/,$(wildcard native/patches/*.patch)); \
@@ -85,6 +87,20 @@ native-checkout:
 	else \
 		echo "No patches in native/patches/ — see native/README.md."; \
 	fi
+	@# A patch that lands inside a submodule cannot go through the apply above: a
+	@# submodule is a separate repository, and the parent's object database does not
+	@# have its blobs, so --3way has nothing to merge against. Those patches live under
+	@# native/patches/submodules/<submodule path>/ and are applied in the submodule's
+	@# own worktree instead.
+	@find native/patches/submodules -name '*.patch' 2>/dev/null | sort | while read -r patch; do \
+		sub=$$(dirname "$${patch#native/patches/submodules/}"); \
+		if [ ! -d "$(NATIVE_DIR)/$$sub" ]; then \
+			echo "No submodule at $$sub for $$patch — has it been renamed upstream?" >&2; \
+			exit 1; \
+		fi; \
+		git -C "$(NATIVE_DIR)/$$sub" apply --3way "$(CURDIR)/$$patch" || exit 1; \
+		echo "Applied $$(basename "$$patch") in $$sub."; \
+	done
 
 native-clean:
 	rm -rf "$(NATIVE_DIR)" "$(WASM_BUILD_DIR)"

@@ -1,0 +1,33 @@
+Subject: [PATCH 5/5] Core/MIPS: make FakeJit concrete again
+
+JitInterface declares
+
+    virtual const u8 *GetCodeBase() const = 0;
+
+and FakeJit does not implement it, so `new MIPSComp::FakeJit(mipsState)`
+in CreateNativeJit() fails to compile: allocating an object of abstract
+class type.
+
+That call is the fallback arm of CreateNativeJit(), taken on every
+architecture without a native JIT backend, so the only builds that reach
+it are the ones nobody runs — which is why this has gone unnoticed.
+
+nullptr is the honest answer and the same one IRJit gives: FakeJit never
+emits code, so there is no code base for the debugger to display.
+
+diff --git a/Core/MIPS/fake/FakeJit.h b/Core/MIPS/fake/FakeJit.h
+index bab59c000..c6b8eb9ef 100644
+--- a/Core/MIPS/fake/FakeJit.h
++++ b/Core/MIPS/fake/FakeJit.h
+@@ -47,6 +47,11 @@ class FakeJit : public FakeGen::FakeXCodeBlock, public JitInterface, public MIPS
+ 	void Compile(u32 em_address) override;	// Compiles a block at current MIPS PC
+ 	void DoJit(u32 em_address, JitBlock *b);
+ 
++	// FakeJit never emits anything, so there is no code to point a debugger at. This is
++	// the same answer IRJit gives, and it is what makes the class concrete: JitInterface
++	// declares GetCodeBase() pure virtual, and CreateNativeJit() instantiates FakeJit on
++	// every architecture without a native backend.
++	const u8 *GetCodeBase() const override { return nullptr; }
+ 	const u8 *GetCrashHandler() const override { return nullptr; }
+ 	bool CodeInRange(const u8 *ptr) const override { return IsInSpace(ptr); }
+ 	bool DescribeCodePtr(const u8 *ptr, std::string &name) override;

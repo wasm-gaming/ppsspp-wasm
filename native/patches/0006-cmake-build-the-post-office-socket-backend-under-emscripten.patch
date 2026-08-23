@@ -1,0 +1,38 @@
+Subject: [PATCH 6/6] cmake: build the post office's POSIX socket backend under Emscripten
+
+ext/aemu_postoffice/client/postoffice.c is compiled unconditionally and calls
+into whichever sock_impl_*.c the platform list selects. Emscripten sets UNIX but
+not LINUX, so it selected none, and the link ended in
+
+    wasm-ld: error: lib/libCore.a(postoffice.c.o): undefined symbol:
+             native_close_tcp_sock
+
+and a dozen more like it.
+
+Emscripten's libc is musl-derived and it has the BSD sockets API, so the POSIX
+backend is the correct one rather than merely the one that compiles. What a
+browser actually does with a TCP connect is a separate question from whether
+this links; ad-hoc multiplayer needs a relay either way.
+
+Needs the SO_NOSIGPIPE fix in the aemu_postoffice submodule — see
+native/patches/submodules/.
+
+diff --git a/Core/CMakeLists.txt b/Core/CMakeLists.txt
+index 3c902b2ff..c543a496c 100644
+--- a/Core/CMakeLists.txt
++++ b/Core/CMakeLists.txt
+@@ -13,7 +13,13 @@ if(WIN32)
+ 	)
+ endif()
+ 
+-if(LINUX OR ANDROID OR MACOSX OR IOS OR BSD)
++# EMSCRIPTEN is in this list because postoffice.c is compiled unconditionally and
++# calls into whichever sock_impl_*.c the platform selects. Emscripten sets UNIX but
++# not LINUX, so without it the post office compiles and then fails to link with
++# native_close_tcp_sock and friends undefined. Its libc is musl-derived and it has
++# the BSD sockets API, so the POSIX backend is the right one — what a browser does
++# with a TCP connect is a separate question from whether this links.
++if(LINUX OR ANDROID OR MACOSX OR IOS OR BSD OR EMSCRIPTEN)
+ 	list(APPEND aemu_postoffice
+ 		${CMAKE_SOURCE_DIR}/ext/aemu_postoffice/client/sock_impl_linux.c
+ 	)

@@ -79,6 +79,20 @@ The CI job (`.github/workflows/wasm.yml`) then keeps its whole output as a `buil
 artifact and writes the `FAILED:` lines into the run summary, because a round with fifty
 failures is not something to read by scrolling a web log.
 
+Two things about that job are worth knowing before editing it, because both were learned
+the hard way on the first round:
+
+- **The build step names its shell.** A `run:` step's default shell is `bash -e {0}` —
+  no `pipefail` — so `make wasm-release | tee build.log` reports `tee`'s exit status, and
+  a round with three compile errors comes back **green**. `shell: bash` is what adds
+  `-o pipefail`. The job's verdict is then applied by an explicit final step rather than
+  by the build step itself.
+- **The caches are restored and saved by separate steps.** `actions/cache` saves in a
+  post step guarded by `success()`, so on a red round it saves nothing — and while a port
+  is in progress, *every* round is red. `actions/cache/restore` plus
+  `actions/cache/save` with `if: always()` is what makes a failed round pay for the next
+  one, which is the entire point of caching here.
+
 ### What the CI job caches, and why it has to
 
 Two caches, holding different things:
@@ -96,6 +110,9 @@ Two caches, holding different things:
 Both are rolling caches — the key carries the run id and `restore-keys` picks up the
 previous round — because a GitHub cache entry is immutable once written, so a fixed key
 would freeze the first round's misses forever.
+
+Verified on round 7: 1073 cacheable compiles, all of them misses on a cold runner, 2146
+files written. `EM_COMPILER_WRAPPER` does reach the real compiler.
 
 ### The shape of the Emscripten branch in CMake
 
@@ -206,12 +223,20 @@ what makes offering the work upstream a matter of sending the series.
 Rolling forward is: bump `REV` in `UPSTREAM`, run `make native-checkout`, fix whatever
 fails to apply, regenerate.
 
+### Patches that land inside a submodule
+
+`git apply --3way` in the PPSSPP worktree cannot touch a file inside one of its
+submodules: a submodule is a separate repository, and the parent's object database does
+not hold its blobs, so the three-way merge has nothing to merge against. Those patches
+live under `patches/submodules/<submodule path>/` instead, and `make native-checkout`
+applies each one in that submodule's own worktree. `ext/aemu_postoffice` is the first of
+them.
+
 ### 0001 — the Emscripten platform
 
-**Status: configures, and compiles past the first 150 of 1118 targets.** libzip,
-libpng and xxhash build clean, and the SDL3 port downloads and builds — so the flag
-set is sound. That is the whole of what this patch claims. Every hunk is guarded
-by `EMSCRIPTEN`, so no other target changes:
+**Status: configures, and all 1118 targets compile.** The flag set is sound and the
+whole of PPSSPP now builds under Emscripten; what remains is the link. Every hunk is
+guarded by `EMSCRIPTEN`, so no other target changes:
 
 - the platform block itself, which has to sit *before* the `option()` calls because it
   decides their defaults;
@@ -245,23 +270,43 @@ them came back different from what the reference fork suggested:
   (non-wasm code runs slowly across a growing heap). Accepted: PPSSPP cannot fit a
   fixed heap, and it needs its threads.
 
+### 0004, 0005 — two more things upstream never compiled
+
+Both are upstream bugs rather than Emscripten ones, found by being the first build to
+reach the code: 0004 completes the no-SIMD branch of `Common/Math/CrossSIMD.h`
+(`Vec4F32::WithLane3From`, `AnyCompareBitsSet`), and 0005 gives `FakeJit` the
+`GetCodeBase()` that `JitInterface` declares pure virtual — without it
+`CreateNativeJit()` cannot instantiate the class it falls back to on every
+architecture with no native JIT. Both are worth sending upstream on their own, as 0003
+is.
+
+### 0006 — the post office links
+
+`ext/aemu_postoffice/client/postoffice.c` is compiled unconditionally and calls into
+whichever `sock_impl_*.c` the platform list picks. Emscripten sets `UNIX` but not
+`LINUX`, so it picked none, and the link died on `native_close_tcp_sock` and a dozen
+like it. It needs the `SO_NOSIGPIPE` fix in the submodule as well — see above.
+
 ### What is not done
 
-The build itself has not been run to completion anywhere yet. Configure passing means
-the tree is now *buildable* in the sense that ninja has a plan; it says nothing about
-whether a million lines of C++ compile under Emscripten. Expect the real work to be
-there — `Common/CPUDetect`, threading, the file system, and the GL backend are the
-usual places a port of this size bleeds.
+**Nothing has linked yet.** All 1118 targets compile; the final `ppsspp.js` link is
+where the work now is, and `SDL/SDLMain.cpp` is the known obstacle: its main loop
+blocks the thread it runs on, which is the one thing a browser's main thread cannot
+do. Either `-sPROXY_TO_PTHREAD` or an `emscripten_set_main_loop` rewrite; that
+decision is not made yet.
 
 The bridge in the next section is also still unwritten, so nothing exports
 `ppsspp_web_*` yet and `-sEXPORTED_FUNCTIONS` is deliberately absent: naming a symbol
 that does not exist is a link error.
 
 **Note for anyone building in this repository's own agent sandbox:** the Emscripten
-SDL3 port is fetched from `https://github.com/libsdl-org/SDL/archive/release-3.4.2.zip`,
-and that URL is refused (HTTP 403) by the sandbox's egress policy, so a local build
-stops at the first compile. CI has no such restriction — `Build wasm` is where the
-compile actually gets attempted.
+ports (SDL3, SDL3_ttf, freetype, harfbuzz, zlib) are fetched from GitHub *archive*
+URLs, and those are refused (HTTP 403) by the sandbox's egress policy while `git`
+reads of the same repositories are allowed. A local build is still possible: clone
+each project at the tag its port pins into
+`<emsdk>/upstream/emscripten/cache/ports/<name>/<expected subdir>` and write the
+port's URL into `<...>/ports/<name>/.emscripten_url`, which is the marker
+`fetch_port_artifact` checks before downloading anything. CI has no such restriction.
 
 ## Known to be missing
 
