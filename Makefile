@@ -10,9 +10,21 @@ TYPEDOC := ./node_modules/.bin/typedoc
 
 # `tsc` never removes output whose source is gone, so a deleted module would survive
 # in dist/ and get published. Clean first, always.
+#
+# The emulator artifacts are copied in afterwards rather than being built into dist/
+# directly, precisely because of that `rm -rf`: `src/native/` is where a forty-minute
+# wasm build leaves its output, and a `make build` must not destroy it. `src/loader.ts`
+# resolves the glue relative to itself, so once compiled it looks in `dist/native/` —
+# which is why this copy is load-bearing rather than tidy.
 build:
 	rm -rf dist
 	$(TSC) -p tsconfig.json
+	@if [ -d src/native ]; then \
+		mkdir -p dist/native && cp src/native/* dist/native/ && \
+		echo "Copied the emulator artifacts into dist/native/."; \
+	else \
+		echo "No src/native/ — publishing the contract layer without the emulator (see native/README.md)."; \
+	fi
 
 typecheck:
 	$(TSC) -p tsconfig.json --noEmit

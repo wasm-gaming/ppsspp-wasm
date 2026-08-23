@@ -113,6 +113,18 @@ make native-checkout  # the pinned PPSSPP revision + native/patches/
 make wasm-release     # emcmake + ninja → src/native/  (~40 min, needs emcc)
 ```
 
+## Releasing
+
+`Release` is a manual workflow: pick a bump, pick a dist-tag. It runs the same checks a
+push does, bumps and tags, publishes to npm with provenance, and deploys the site.
+
+The dist-tag defaults to **`next`**, and that is not caution for its own sake. Until
+`native/` produces a build, this package is the contract layer alone — `loadPpsspp`
+resolves an Emscripten glue that is not in the tarball, so a browser cannot actually
+start a session. Publishing to `latest` would make `npm i @wasm-gaming/ppsspp-wasm`
+hand someone an engine that cannot run. `latest` belongs to the release that ships the
+emulator.
+
 ## Conformance
 
 `tests/conformance.ts` drives the engine the way a host would and is type-checked
