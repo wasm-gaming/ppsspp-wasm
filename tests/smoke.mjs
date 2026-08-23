@@ -37,7 +37,11 @@ const args = Object.fromEntries(
 
 const ARTIFACTS = resolve(args.artifacts ?? 'src/native');
 const TIMEOUT_MS = Number(args.timeout ?? 90) * 1000;
-const POOL = Number(args.pool ?? 8);
+// Sized for a deadlock, not for speed. Emscripten grows its worker pool by returning
+// to the event loop; PPSSPP's render thread does not return to the event loop while it
+// waits for a frame. So a pool that runs out mid-boot does not slow down — it stops:
+// "Tried to spawn a new thread, but the thread pool is exhausted." 8 was not enough.
+const POOL = Number(args.pool ?? 16);
 const CHROMIUM =
   args.chromium ??
   process.env.CHROMIUM_PATH ??
