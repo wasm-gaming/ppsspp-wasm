@@ -111,8 +111,10 @@ Both are rolling caches — the key carries the run id and `restore-keys` picks 
 previous round — because a GitHub cache entry is immutable once written, so a fixed key
 would freeze the first round's misses forever.
 
-Verified on round 7: 1073 cacheable compiles, all of them misses on a cold runner, 2146
-files written. `EM_COMPILER_WRAPPER` does reach the real compiler.
+Verified end to end. Round 7 proved the wiring — 1073 cacheable compiles, all misses on
+a cold runner, 2146 files written, so `EM_COMPILER_WRAPPER` does reach the real
+compiler. Round 9 proved the payoff: the same build, one patch further, went from
+**9m47s to 2m52s** by restoring what round 8 saved.
 
 ### The shape of the Emscripten branch in CMake
 
