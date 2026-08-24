@@ -100,7 +100,7 @@ const HARNESS = `<!doctype html>
     foreignFrames: 0,
     gl: {
       draws: 0, drawsToCanvas: 0, clears: 0, clearsToCanvas: 0,
-      binds: 0, bindsNull: 0, bindTargets: {}, firstBinds: [],
+      binds: 0, bindsDefault: 0, bindTargets: {}, firstBinds: [], bindKinds: {},
       onCanvas: true,
     },
     pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, hash: null, error: null },
@@ -190,13 +190,24 @@ const HARNESS = `<!doctype html>
         : target === this.DRAW_FRAMEBUFFER ? 'DRAW_FRAMEBUFFER'
         : target === this.READ_FRAMEBUFFER ? 'READ_FRAMEBUFFER'
         : String(target);
-      const key = name + (fb === null ? ':null' : ':fbo');
+      // Falsy, not strictly null. Round 23 counted 7098 binds and not one null, which
+      // read as "PPSSPP never targets the backbuffer" — and the emulator's own code says
+      // that cannot be. The gap is here: Emscripten's glBindFramebuffer forwards
+      // GL.framebuffers[name], and index 0 is a hole in that array, so a zero name
+      // arrives as undefined. WebGL accepts undefined as null and renders fine; a
+      // strict === null test does not see it at all.
+      const isDefault = !fb;
+      const key = name + (isDefault ? ':default' : ':fbo');
       g.bindTargets[key] = (g.bindTargets[key] || 0) + 1;
-      if (fb === null) g.bindsNull++;
+      // Kept so the next round proves this rather than re-deriving it: what a default
+      // bind actually arrives as.
+      const kind = fb === null ? 'null' : fb === undefined ? 'undefined' : typeof fb;
+      g.bindKinds[kind] = (g.bindKinds[kind] || 0) + 1;
+      if (isDefault) g.bindsDefault++;
       if (g.firstBinds.length < 24) g.firstBinds.push(key);
       // FRAMEBUFFER and DRAW_FRAMEBUFFER decide where a draw lands. READ_FRAMEBUFFER
       // does not, so it must not move this flag.
-      if (target === this.FRAMEBUFFER || target === this.DRAW_FRAMEBUFFER) g.onCanvas = fb === null;
+      if (target === this.FRAMEBUFFER || target === this.DRAW_FRAMEBUFFER) g.onCanvas = isDefault;
       return realBind.call(this, target, fb);
     };
     return ctx;
@@ -483,7 +494,7 @@ const vitals = (p) =>
 const glNote = (p) =>
   p.gl
     ? ` GL: ${p.gl.draws} draw calls (${p.gl.drawsToCanvas} with the default framebuffer bound), ${p.gl.clears} clears (${p.gl.clearsToCanvas} to it), ${p.gl.binds} framebuffer binds ` +
-      `— ${JSON.stringify(p.gl.bindTargets ?? {})}, first ${(p.gl.firstBinds ?? []).join(' ') || 'none'}. ` +
+      `— ${JSON.stringify(p.gl.bindTargets ?? {})}, arriving as ${JSON.stringify(p.gl.bindKinds ?? {})}. ` +
       `Something other than the harness asked for ${p.foreignFrames ?? 0} animation frames.`
     : '';
 
