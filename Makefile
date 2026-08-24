@@ -87,6 +87,15 @@ WASM_DEBUG_FLAGS := -sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2 -sPTHREADS_DEBUG=1 -
 
 WASM_LINK_FLAGS ?= $(if $(DEBUG),$(WASM_DEBUG_FLAGS),)
 
+# `make wasm GLTRACE=1` switches on the push/pull trace GLRenderManager already carries:
+# which frame the emu thread began, which task it pushed, which the render thread pulled
+# and ran, which wait either is sitting in. This is the one instrument that sees both
+# sides of that handshake, and it is what to reach for when one of them goes quiet.
+#
+# Unlike DEBUG this is a *compile* define, so it costs a recompile — but patch 0010
+# scopes it to the single file with the VLOGs in it, so that is one object and not 1118.
+WASM_TRACE_ARGS := $(if $(GLTRACE),-DPPSSPP_GL_TRACE=ON,)
+
 # Fetch the pinned upstream commit and apply this project's patch series onto it.
 # `--filter=blob:none` because a full PPSSPP history is around a gigabyte and the
 # build needs one revision of it.
@@ -147,7 +156,7 @@ WASM_CMAKE_ARGS := \
 
 wasm-config:
 	emcmake $(CMAKE) -S "$(NATIVE_DIR)" -B "$(WASM_BUILD_DIR)" $(WASM_CMAKE_ARGS) \
-		-DCMAKE_EXE_LINKER_FLAGS="$(WASM_LINK_FLAGS)" \
+		-DCMAKE_EXE_LINKER_FLAGS="$(WASM_LINK_FLAGS)" $(WASM_TRACE_ARGS) \
 		-DCMAKE_BUILD_TYPE=$(if $(RELEASE),Release,RelWithDebInfo)
 
 wasm-build:

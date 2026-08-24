@@ -1,0 +1,58 @@
+Subject: [PATCH 10/10] Common/GPU: let a build switch on the OpenGL render trace
+
+GLRenderManager already carries a complete trace of the handshake between the
+emu thread and the render thread. Every VLOG in the file names one side of it:
+which frame was begun, which task was pushed, which was pulled and run, which
+wait is being sat in. It is precisely the instrument this port needs, and it was
+already written.
+
+It is behind `#if 0 // def _DEBUG`, which no build can turn on. A round that
+needs the trace has to edit the file, and an instrument that has to be
+hand-edited into place is one nobody reaches for.
+
+Adding `defined(PPSSPP_GL_TRACE)` to that condition costs nothing when the
+define is absent — which is every build that does not ask for it — and makes the
+trace a compile flag. `make wasm GLTRACE=1` passes it here.
+
+The `0 // def _DEBUG` half is left exactly as upstream wrote it rather than
+tidied away: whatever the reason it is disabled in debug builds, it is not this
+patch's business.
+
+diff --git a/Common/GPU/OpenGL/GLRenderManager.cpp b/Common/GPU/OpenGL/GLRenderManager.cpp
+index c1f03084d..ccf6f9052 100644
+--- a/Common/GPU/OpenGL/GLRenderManager.cpp
++++ b/Common/GPU/OpenGL/GLRenderManager.cpp
+@@ -11,7 +11,15 @@
+ #include "Common/StringUtils.h"
+ #include "Common/Math/math_util.h"
+ 
+-#if 0 // def _DEBUG
++// The push/pull trace. Every VLOG in this file names one side of the handshake between
++// the emu thread and the render thread — which frame was begun, which task was pushed,
++// which was pulled and run, which wait is being sat in. It is exactly the instrument
++// needed when one of the two sides goes quiet, and it was already written; it was simply
++// switched off, and `#if 0` cannot be switched on from a build.
++//
++// Behaviour is unchanged when the define is absent, which is every build that does not
++// ask for it.
++#if defined(PPSSPP_GL_TRACE) || 0 // def _DEBUG
+ #define VLOG(...) INFO_LOG(Log::G3D, __VA_ARGS__)
+ #else
+ #define VLOG(...)
+diff --git a/Common/CMakeLists.txt b/Common/CMakeLists.txt
+index 7c146831c..5b3803a17 100644
+--- a/Common/CMakeLists.txt
++++ b/Common/CMakeLists.txt
+@@ -403,3 +403,12 @@ endif()
+ # was only linked to the old combined "core" target, which happened to always be linked after
+ # Common everywhere it mattered).
+ target_link_libraries(Common ${GlslangLibs})
++
++# The OpenGL push/pull trace, off unless a round asks for it. Scoped to the one file
++# that has the VLOGs rather than set globally, so switching it on invalidates a single
++# object rather than the whole ccache — an instrument nobody can afford to turn on is
++# an instrument nobody turns on.
++if(PPSSPP_GL_TRACE)
++	set_source_files_properties(GPU/OpenGL/GLRenderManager.cpp PROPERTIES COMPILE_DEFINITIONS PPSSPP_GL_TRACE)
++	message(STATUS "OpenGL render trace enabled (PPSSPP_GL_TRACE)")
++endif()
