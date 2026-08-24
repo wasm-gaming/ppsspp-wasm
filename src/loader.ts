@@ -93,6 +93,28 @@ export const loadPpsspp: PpssppLoader = async (init: PpssppModuleInit): Promise<
   const create = await glue();
   const module = await create({
     canvas: init.canvas,
+    // How SDL3 is told where to render, and it has to happen *here* rather than on the
+    // module afterwards. `SDL_GetHint` reads the environment, Emscripten builds that
+    // environment from `ENV` in `__emscripten_environ_constructor` — a static
+    // constructor, so it runs inside `__wasm_call_ctors` — and `initRuntime()` calls
+    // that during instantiation. `preRun` is the last point before it. Writing
+    // `module.ENV` after `await create(...)` looks equivalent and is not: the copy C
+    // sees was already taken, `SDL_GetHint` falls back to `#canvas`, and window
+    // creation fails with `InitSurface: no window or GL context`. Round 28 is that
+    // mistake, measured.
+    //
+    // The callback is handed the module by `callRuntimeCallbacks`, which passes
+    // `Module` as its first argument.
+    //
+    // SDL offers a second way in — `SDL_PROP_WINDOW_CREATE_EMSCRIPTEN_CANVAS_ID_STRING`
+    // on `SDL_CreateWindowWithProperties`, per window rather than per process, which is
+    // a closer fit to what this package does. It would mean patching PPSSPP's own
+    // window creation; this needs nothing from upstream.
+    preRun: [
+      (mod: PpssppModule) => {
+        mod.ENV.SDL_EMSCRIPTEN_CANVAS_SELECTOR = init.canvasSelector;
+      },
+    ],
     // Read by the `-sPTHREAD_POOL_SIZE` expression the build links with, which is how
     // a link-time pool size is made to follow a runtime decision. See native/README.md.
     pthreadPoolSize: init.pthreadPoolSize,
@@ -119,19 +141,5 @@ export const loadPpsspp: PpssppLoader = async (init: PpssppModuleInit): Promise<
     ...(init.ppssppEvent ? { ppssppEvent: init.ppssppEvent } : {}),
   });
 
-  // The other half of "PPSSPP renders here", and the half SDL3 actually reads.
-  //
-  // Its Emscripten video driver resolves `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR` in
-  // `Emscripten_CreateWindow`, and `SDL_GetHint` looks at the environment before its
-  // own hint table — so writing it here, after instantiation and before `callMain`,
-  // is in time: the window is not created until `main()` runs. Nothing in C is
-  // involved, which is why `ENV` is exported at all.
-  //
-  // The alternative SDL offers is `SDL_PROP_WINDOW_CREATE_EMSCRIPTEN_CANVAS_ID_STRING`
-  // on `SDL_CreateWindowWithProperties`, which would be per window rather than per
-  // process — a better fit for what this package does, and a patch to PPSSPP's own
-  // window creation rather than a line here. This is the cheaper of the two and the
-  // one that needs nothing from upstream.
-  module.ENV.SDL_EMSCRIPTEN_CANVAS_SELECTOR = init.canvasSelector;
   return module;
 };

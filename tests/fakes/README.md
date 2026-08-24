@@ -46,4 +46,10 @@ and a fake that never triggers it agree with each other, which is how a wrong nu
 survived six green rounds. This one issues real `drawArrays` calls with the canvas
 bound, and the selftest pins the counts.
 
+Each of them also runs the `preRun` callbacks the runner passes, the way Emscripten
+does, and hands the module to each one. That is not decoration: the runner writes SDL3's
+canvas selector into `ENV` from `preRun`, because Emscripten copies that environment into
+C from a static constructor and anything later is a write nobody reads. A fake that
+skipped `preRun` would leave the one path the real build depends on untested.
+
 Run them with `make smoke-selftest`.

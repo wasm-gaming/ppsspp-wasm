@@ -522,12 +522,26 @@ fails window creation outright when nothing matches —
 SDL2 took the element from `Module.canvas`; SDL3 does not.
 
 `SDL_GetHint` reads the environment before its own hint table, so the selector crosses
-the seam as `PpssppModuleInit.canvasSelector` and the loader writes it into
-`Module.ENV` after instantiation and before `callMain` — in time, because the window is
-not created until `main()` runs. `ENV` is in `-sEXPORTED_RUNTIME_METHODS` for that and
-nothing else, and no C is involved. Each session's canvas carries an id of its own
-(`ppsspp-canvas-N`), which is what a restart needs: a new canvas is a new target, and
-they cannot all be called `canvas`.
+the seam as `PpssppModuleInit.canvasSelector` and the loader writes it into `Module.ENV`.
+`ENV` is in `-sEXPORTED_RUNTIME_METHODS` for that and nothing else, and no C is involved.
+Each session's canvas carries an id of its own (`ppsspp-canvas-N`), which is what a
+restart needs: a new canvas is a new target, and they cannot all be called `canvas`.
+
+**It is written from `preRun`, and that is not a detail.** Emscripten copies `ENV` into
+the environment C sees in `__emscripten_environ_constructor`, which is a *static
+constructor* — so it runs inside `__wasm_call_ctors`, which `initRuntime()` calls during
+instantiation. `run()` calls `preRun()` and only then `initRuntime()`, so `preRun` is the
+last point at which a write still lands. Round 28 is the other version of this measured:
+the write happened on the resolved module, which looks equivalent and is a write nobody
+reads. What it produced was
+
+```
+Failed to initialize graphics backend: SDLGLGraphicsContext::InitSurface: no window or GL context
+```
+
+— SDL falling back to `#canvas`, finding nothing, and failing window creation. The
+callback is handed the module by `callRuntimeCallbacks`, which passes `Module` as its
+first argument.
 
 SDL offers a second way in — `SDL_PROP_WINDOW_CREATE_EMSCRIPTEN_CANVAS_ID_STRING` on
 `SDL_CreateWindowWithProperties`, which is per window rather than per process, and a

@@ -12,10 +12,10 @@
 // the runner has to say which of them is the instrument's fault. It is neither: it is
 // the alpha channel.
 export default async function createPpsspp(moduleArg = {}) {
-  return Object.assign({}, moduleArg, {
+  const module = Object.assign({}, moduleArg, {
     // The real glue's process environment, which the runner writes SDL3's canvas
-    // selector into before callMain. A fake without one would make the harness throw
-    // where the emulator would not.
+    // selector into. A fake without one would make the harness throw where the
+    // emulator would not.
     ENV: {},
     callMain() {
       const gl = moduleArg.canvas.getContext('webgl2');
@@ -37,4 +37,10 @@ export default async function createPpsspp(moduleArg = {}) {
       requestAnimationFrame(draw);
     },
   });
+  // Emscripten calls these before the static constructors that copy ENV into the
+  // environment C sees, and hands each one the module. That is where the runner writes
+  // SDL3's canvas selector, so a fake that never called them would leave the one path
+  // the real build depends on untested.
+  for (const fn of moduleArg.preRun ?? []) fn(module);
+  return module;
 }

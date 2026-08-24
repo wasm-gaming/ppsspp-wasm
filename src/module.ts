@@ -100,8 +100,12 @@ export interface PpssppModule {
    * SDL3's Emscripten video driver does not take the canvas from the module the way
    * SDL2 did: it resolves a CSS selector from `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`,
    * and `SDL_GetHint` reads the environment before anything else. So this is how
-   * {@link PpssppModuleInit.canvasSelector} reaches SDL — written by the loader after
-   * instantiation and before {@link callMain}, which is when the window is created.
+   * {@link PpssppModuleInit.canvasSelector} reaches SDL.
+   *
+   * **It is written from `preRun`, not afterwards.** Emscripten copies `ENV` into the
+   * environment C sees from a *static constructor*, which runs inside `initRuntime()`
+   * during instantiation — so a write on the resolved module is always too late, and
+   * silently: SDL falls back to `#canvas` and window creation fails.
    */
   readonly ENV: Record<string, string>;
 
@@ -128,9 +132,9 @@ export interface PpssppModuleInit {
    * *new* canvas every time it starts, so they cannot all be called `canvas`, and the
    * selector has to cross this seam per instance rather than being a constant.
    *
-   * The loader writes it into {@link PpssppModule.ENV} before `callMain`, because
-   * `SDL_GetHint` reads the environment first. It must match exactly one element, and
-   * that element must be {@link canvas}.
+   * The loader writes it into {@link PpssppModule.ENV} from `preRun` — see that
+   * property for why the timing is not a detail. It must match exactly one element,
+   * and that element must be {@link canvas}.
    */
   canvasSelector: string;
   /** Worker pool size. Comes from `config.threads`, resolved against the machine. */

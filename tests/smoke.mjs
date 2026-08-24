@@ -319,6 +319,16 @@ const HARNESS = `<!doctype html>
     const mod = await createPpsspp({
       canvas,
       pthreadPoolSize: ${POOL},
+      // Where SDL3 is told to render, and the same call src/loader.ts makes. It has to
+      // be preRun rather than a write on the module afterwards: Emscripten copies ENV
+      // into the environment C sees from a static constructor, which initRuntime() runs
+      // during instantiation, so anything later is a write nobody reads. Round 28 is
+      // that mistake measured — 'InitSurface: no window or GL context', because SDL fell
+      // back to '#canvas' and this page deliberately has no such element.
+      preRun: [(m) => {
+        m.ENV.SDL_EMSCRIPTEN_CANVAS_SELECTOR = CANVAS_SELECTOR;
+        say({ kind: 'stage', text: 'canvas selector ' + CANVAS_SELECTOR });
+      }],
       // The glue is served under /native/ and the page is at /, which is the shape of
       // a real host — the emulator inside node_modules, the page anywhere. Without
       // this, Emscripten asks the *document* for ppsspp.data, gets a 404 and waits for
@@ -337,14 +347,6 @@ const HARNESS = `<!doctype html>
 
     state.stage = 'instantiated';
     say({ kind: 'stage', text: 'instantiated' });
-
-    // How SDL3 is told where to render, and the same line src/loader.ts runs. SDL_GetHint
-    // reads the environment before its own hint table, and the window is not created
-    // until main() runs, so writing it here is in time. Reported rather than assumed:
-    // a build whose ENV is not exported would throw here instead of failing later
-    // inside SDL, where the message says nothing about a canvas.
-    mod.ENV.SDL_EMSCRIPTEN_CANVAS_SELECTOR = CANVAS_SELECTOR;
-    say({ kind: 'stage', text: 'canvas selector ' + CANVAS_SELECTOR });
 
     // Yield first, so the report above is delivered even if the call below never
     // returns. Without this the runner cannot tell "never instantiated" from
