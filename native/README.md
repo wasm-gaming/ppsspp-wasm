@@ -500,6 +500,14 @@ worker can block for real.
 
 ### What is not done
 
+**The bridge links and answers; its events are unproven.** Round 30: the build links
+with `-sEXPORTED_FUNCTIONS` naming four symbols that have to exist, and the smoke run's
+probe gets `1, 1, 0` out of `ppsspp_web_apply_setting` — so `ccall` reaches the export
+and the lookup in PPSSPP's config table is real. Every *event* is still untested by
+anything but reading: a smoke run boots no game, so `booted` and `fps` cannot fire, and
+`pause`, `exit` and `saveState` need input the harness does not drive. The first thing
+that exercises them is a session that boots a real ISO.
+
 **It runs, and it draws its own UI.** All 1118 targets compile, the artifacts are
 produced, and the glue exports exactly what `../src/module.ts` declares. Round 26 is the
 measurement: 1552 distinct colours in a screenshot of the tab, 160684 draw calls over two
