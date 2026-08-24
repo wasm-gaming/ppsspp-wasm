@@ -29,12 +29,34 @@ const args = Object.fromEntries(
 const TIMEOUT = args.timeout ?? '12';
 const SETTLE = args.settle ?? '2';
 
+// `alsoExpect` is checked against the whole transcript rather than the verdict line, and
+// is where the diagnostic counters are pinned: a number nobody checks is a number that
+// quietly stops being computed.
 const CASES = [
-  { dir: 'draws', code: 0, expect: /^DRAWING —/m, why: 'a canvas with colour on it passes' },
+  {
+    dir: 'draws',
+    code: 0,
+    expect: /^DRAWING —/m,
+    alsoExpect: /foreignFrames=[1-9]/,
+    why: 'a canvas with colour on it passes, and its animation frames are seen',
+  },
   { dir: 'clears', code: 1, expect: /^CLEARED, NOT DRAWN —/m, why: 'a uniform canvas is not a picture' },
   { dir: 'blank', code: 1, expect: /^BLANK —/m, why: 'a live loop that never paints fails' },
+  {
+    dir: 'offscreen',
+    code: 1,
+    expect: /^BLANK —/m,
+    alsoExpect: /clears \(0 to it\)/,
+    why: 'a renderer that never blits is told apart from one that never runs',
+  },
   { dir: 'blocks', code: 1, expect: /^BLOCKED —/m, why: 'a held main thread is still reported, not hung on' },
-  { dir: 'hangs', code: 1, expect: /^STOPPED at "instantiating"/m, why: 'a factory that never settles is named' },
+  {
+    dir: 'hangs',
+    code: 1,
+    expect: /^STOPPED at "instantiating"/m,
+    alsoExpect: /foreignFrames=0/,
+    why: 'a factory that never settles is named, and nothing scheduled a frame',
+  },
 ];
 
 let failed = 0;
@@ -53,7 +75,7 @@ for (const c of CASES) {
   );
   const out = (run.stdout ?? '') + (run.stderr ?? '');
   const verdict = out.match(/^(?:DRAWING|CLEARED, NOT DRAWN|BLANK|BLOCKED|STOPPED|RUNNING|CRASHED|FAILED|ALIVE BUT STALLED|NO ANSWER|NO PICTURE READ)\b.*$/m)?.[0];
-  const ok = run.status === c.code && c.expect.test(out);
+  const ok = run.status === c.code && c.expect.test(out) && (!c.alsoExpect || c.alsoExpect.test(out));
   console.log(`   ${ok ? 'ok  ' : 'FAIL'} exit ${run.status} (want ${c.code})`);
   console.log(`        ${verdict ?? '(no verdict line found)'}`);
   if (!ok) {

@@ -85,6 +85,8 @@ const HARNESS = `<!doctype html>
     heartbeat: 0,
     loopTurns: 0,
     contexts: 0,
+    foreignFrames: 0,
+    gl: { draws: 0, drawsToCanvas: 0, clears: 0, clearsToCanvas: 0, binds: 0, onCanvas: true },
     pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, hash: null, error: null },
     stdout: [],
     stderr: [],
@@ -102,6 +104,21 @@ const HARNESS = `<!doctype html>
   // missing and the only one observable from out here.
   const tick = () => { state.loopTurns++; requestAnimationFrame(tick); };
   requestAnimationFrame(tick);
+
+  // Who *else* is asking for animation frames. Emscripten drives
+  // emscripten_set_main_loop(fn, 0) — which is what patch 0008 registers — from
+  // requestAnimationFrame, so a main loop that is really running shows up here as
+  // somebody other than this harness scheduling frames.
+  //
+  // The asymmetry is the point and is worth stating: a number that grows does not prove
+  // oneIteration() is what is growing it, since anything on the page may schedule a
+  // frame. A number that stays at zero is strong evidence that nothing registered a
+  // main loop, or that it stopped being called. Round 17 could distinguish neither.
+  const realRaf = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = (cb) => {
+    if (cb !== tick) state.foreignFrames++;
+    return realRaf(cb);
+  };
 
   const canvas = document.getElementById('canvas');
 
@@ -122,13 +139,48 @@ const HARNESS = `<!doctype html>
   // every frame, so it should not change what is drawn; "should" is the honest strength
   // of that claim, and a DRAWING verdict that only appears with this flag on would be
   // the thing to distrust.
+  //
+  // The same wrapper counts what the emulator asks GL to do, because "nothing was
+  // drawn" has two very different causes and the canvas alone cannot separate them. A
+  // port issuing no draw calls at all is not rendering; one issuing thousands while
+  // never binding the default framebuffer is rendering somewhere else and never
+  // blitting. Round 17 reported BLANK and could not say which.
+  const watch = (ctx) => {
+    const g = state.gl;
+    for (const name of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
+      const real = ctx[name];
+      if (typeof real !== 'function') continue;
+      ctx[name] = function (...a) {
+        g.draws++;
+        if (g.onCanvas) g.drawsToCanvas++;
+        return real.apply(this, a);
+      };
+    }
+    const realClear = ctx.clear;
+    ctx.clear = function (...a) {
+      g.clears++;
+      if (g.onCanvas) g.clearsToCanvas++;
+      return realClear.apply(this, a);
+    };
+    const realBind = ctx.bindFramebuffer;
+    ctx.bindFramebuffer = function (target, fb) {
+      g.binds++;
+      // FRAMEBUFFER and DRAW_FRAMEBUFFER decide where a draw lands. READ_FRAMEBUFFER
+      // does not, so it must not move this flag.
+      if (target === this.FRAMEBUFFER || target === this.DRAW_FRAMEBUFFER) g.onCanvas = fb === null;
+      return realBind.call(this, target, fb);
+    };
+    return ctx;
+  };
+
   const realGetContext = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function (type, attrs) {
-    if (type === 'webgl2' || type === 'webgl' || type === 'experimental-webgl') {
-      state.contexts++;
-      attrs = Object.assign({}, attrs || {}, { preserveDrawingBuffer: true });
+    if (type !== 'webgl2' && type !== 'webgl' && type !== 'experimental-webgl') {
+      return realGetContext.call(this, type, attrs);
     }
-    return realGetContext.call(this, type, attrs);
+    state.contexts++;
+    const ctx = realGetContext.call(this, type, Object.assign({}, attrs || {}, { preserveDrawingBuffer: true }));
+    return ctx ? watch(ctx) : ctx;
   };
 
   // Sampled through drawImage rather than gl.readPixels on purpose. readPixels reads
@@ -388,10 +440,22 @@ const record = (kind, text) => {
 const drew = (p) => (p.pixels?.best ?? 0) > 1 && (p.pixels?.samples ?? 0) >= 2;
 
 const vitals = (p) =>
-  `stage=${p.stage} heartbeat=${p.heartbeat} loopTurns=${p.loopTurns} contexts=${p.contexts ?? 0} ` +
+  `stage=${p.stage} heartbeat=${p.heartbeat} loopTurns=${p.loopTurns} foreignFrames=${p.foreignFrames ?? 0} contexts=${p.contexts ?? 0} ` +
   (p.pixels
     ? `pixels=${p.pixels.samples} samples, best ${p.pixels.best} colours, ${p.pixels.changed} changed, ${p.pixels.opaque} opaque`
     : 'pixels=none');
+
+/**
+ * What the emulator asked GL to do, for the verdicts where it drew nothing. This is the
+ * half that says *which* kind of nothing: no draw calls at all is a loop that is not
+ * running; draw calls that never land on the default framebuffer is a renderer that
+ * never blits.
+ */
+const glNote = (p) =>
+  p.gl
+    ? ` GL: ${p.gl.draws} draw calls (${p.gl.drawsToCanvas} with the default framebuffer bound), ${p.gl.clears} clears (${p.gl.clearsToCanvas} to it), ${p.gl.binds} framebuffer binds. ` +
+      `Something other than the harness asked for ${p.foreignFrames ?? 0} animation frames.`
+    : '';
 
 async function main() {
   if (!CHROMIUM) {
@@ -495,7 +559,7 @@ async function main() {
     try {
       const { result } = await browser.send(
         'Runtime.evaluate',
-        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,pixels:__smoke.pixels})', returnByValue: true },
+        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,foreignFrames:__smoke.foreignFrames,gl:__smoke.gl,pixels:__smoke.pixels})', returnByValue: true },
         sessionId,
         2000,
       );
@@ -564,10 +628,13 @@ async function main() {
       `BLANK — callMain returned and the main thread kept turning (${probe.loopTurns} turns), but nothing was ever presented to the canvas across ${probe.pixels.samples} samples. ` +
       (probe.contexts
         ? `${probe.contexts} WebGL context(s) were created, so it asked for a surface and never painted one.`
-        : 'No WebGL context was ever created, so it never got as far as asking for a surface.');
+        : 'No WebGL context was ever created, so it never got as far as asking for a surface.') +
+      glNote(probe);
     code = 1;
   } else if (probe.pixels.best <= 1) {
-    verdict = `CLEARED, NOT DRAWN — the canvas is one flat colour in every one of ${probe.pixels.samples} samples. Something owns a context and clears it; nothing draws on top.`;
+    verdict =
+      `CLEARED, NOT DRAWN — the canvas is one flat colour in every one of ${probe.pixels.samples} samples. Something owns a context and clears it; nothing draws on top.` +
+      glNote(probe);
     code = 1;
   } else {
     verdict =
