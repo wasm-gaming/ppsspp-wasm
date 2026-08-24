@@ -94,7 +94,12 @@ WASM_LINK_FLAGS ?= $(if $(DEBUG),$(WASM_DEBUG_FLAGS),)
 #
 # Unlike DEBUG this is a *compile* define, so it costs a recompile — but patch 0010
 # scopes it to the single file with the VLOGs in it, so that is one object and not 1118.
-WASM_TRACE_ARGS := $(if $(GLTRACE),-DPPSSPP_GL_TRACE=ON,)
+# `make wasm FRAMETRACE=1` names each call in a frame's update half as it is entered.
+# Everything there runs before g_draw->BeginFrame(), which is the first thing in a frame
+# that logs anything of its own — so a thread that stops above that line stops
+# invisibly, and this is what makes it say which call it stopped in. Patch 0011, and
+# scoped to one file for the same reason as the OpenGL trace.
+WASM_TRACE_ARGS := $(if $(GLTRACE),-DPPSSPP_GL_TRACE=ON,) $(if $(FRAMETRACE),-DPPSSPP_FRAME_TRACE=ON,)
 
 # Fetch the pinned upstream commit and apply this project's patch series onto it.
 # `--filter=blob:none` because a full PPSSPP history is around a gigabyte and the

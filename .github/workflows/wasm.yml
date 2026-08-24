@@ -18,8 +18,8 @@ on:
         description: "Link with the instruments (ASSERTIONS, PTHREADS_DEBUG, names in stack traces)"
         type: boolean
         default: false
-      gltrace:
-        description: "Trace the emu/render handshake (GLRenderManager's own VLOGs, and PPSSPP at verbose)"
+      trace:
+        description: "Trace both halves of a frame: the emu/render handshake and the update calls, PPSSPP at verbose"
         type: boolean
         default: false
       smoke:
@@ -125,7 +125,8 @@ jobs:
           DEBUG: ${{ inputs.debug && '1' || '' }}
           # A compile define rather than a link flag, so it costs one object — patch
           # 0010 scopes it to the file with the VLOGs in it.
-          GLTRACE: ${{ inputs.gltrace && '1' || '' }}
+          GLTRACE: ${{ inputs.trace && '1' || '' }}
+          FRAMETRACE: ${{ inputs.trace && '1' || '' }}
 
       # Runs even when the build succeeded: a successful build has no FAILED lines and
       # this says so in one line, which is a cheaper thing to read than a green tick.
@@ -244,4 +245,4 @@ jobs:
           CHROMIUM_PATH: /usr/bin/google-chrome
         # Verbose when the trace is on: the handshake lines are INFO on Log::G3D, and
         # there is no point compiling them in and then filtering them out.
-        run: make smoke SMOKE_TIMEOUT=120 SMOKE_LOGLEVEL=${{ inputs.gltrace && '6' || '4' }}
+        run: make smoke SMOKE_TIMEOUT=120 SMOKE_LOGLEVEL=${{ inputs.trace && '6' || '4' }}

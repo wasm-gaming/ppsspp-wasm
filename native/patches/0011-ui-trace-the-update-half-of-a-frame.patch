@@ -1,0 +1,111 @@
+Subject: [PATCH 11/11] UI: trace the update half of a frame
+
+Round 20 narrowed the port's remaining failure to a nine-call window and could
+not narrow it further, because none of those calls says anything.
+
+The trace from patch 0010 shows the emu thread completing exactly two frames —
+both submitted, both presented, both fences returned — and then never beginning
+a third. `PUSH: BeginFrame` comes from `g_draw->BeginFrame()` at the top of the
+render half, and it is the first thing in a frame that leaves any trace of its
+own. So a thread that stops anywhere above that line stops invisibly: everything
+before it is bookkeeping that logs nothing on a quiet frame.
+
+This names the call about to be entered, for each of them. It is deliberately
+dumb — no timing, no nesting, just which one was last announced — because the
+question is only "which of these did not return".
+
+Compiled to nothing unless PPSSPP_FRAME_TRACE is defined, and the hunk in
+UI/CMakeLists.txt scopes that define to this one file, so switching it on costs
+a single object rather than the whole ccache. Same shape as the OpenGL trace in
+patch 0010, and for the same reason.
+
+diff --git a/UI/CMakeLists.txt b/UI/CMakeLists.txt
+index 6ad1a9ac5..af05cb3b8 100644
+--- a/UI/CMakeLists.txt
++++ b/UI/CMakeLists.txt
+@@ -123,3 +123,11 @@ list(APPEND UISource
+ add_library(ppsspp_ui STATIC ${UISource})
+ target_link_libraries(ppsspp_ui Common Core)
+ setup_target_project(ppsspp_ui UI)
++
++# The per-frame update trace, off unless a round asks for it. Scoped to the one file
++# with the markers in it, for the same reason the OpenGL trace is scoped in
++# Common/CMakeLists.txt: an instrument that costs a full rebuild is one nobody turns on.
++if(PPSSPP_FRAME_TRACE)
++	set_source_files_properties(NativeApp.cpp PROPERTIES COMPILE_DEFINITIONS PPSSPP_FRAME_TRACE)
++	message(STATUS "NativeFrame update trace enabled (PPSSPP_FRAME_TRACE)")
++endif()
+diff --git a/UI/NativeApp.cpp b/UI/NativeApp.cpp
+index d715605c2..a449f8e35 100644
+--- a/UI/NativeApp.cpp
++++ b/UI/NativeApp.cpp
+@@ -1103,7 +1103,21 @@ void CallbackPostRender(UIContext *dc, void *userdata) {
+ 
+ static void SendMouseDeltaAxis();
+ 
++// A frame's update half, step by step, for a platform where a thread can stop without
++// saying so. Every call below runs before g_draw->BeginFrame(), which is the first thing
++// in a frame that leaves any trace of its own — so a thread that stops in this stretch
++// stops invisibly, and the only way to name the call it stopped in is to say which one
++// is about to be entered.
++//
++// Compiled to nothing unless a build asks for it.
++#ifdef PPSSPP_FRAME_TRACE
++#define FRAME_TRACE(step) INFO_LOG(Log::System, "NativeFrame: %s", step)
++#else
++#define FRAME_TRACE(step) (void)0
++#endif
++
+ void NativeFrame(GraphicsContext *graphicsContext) {
++	FRAME_TRACE("enter");
+ 	PROFILE_END_FRAME();
+ 
+ 	if (!(Core_IsActive() || Core_IsStepping()))
+@@ -1123,28 +1137,36 @@ void NativeFrame(GraphicsContext *graphicsContext) {
+ 	ProcessWheelRelease(NKCODE_EXT_MOUSEWHEEL_DOWN, startTime, false);
+ 
+ 	// it's ok to call this redundantly with DoFrame from EmuScreen
++	FRAME_TRACE("Achievements::Idle");
+ 	Achievements::Idle();
+ 
++	FRAME_TRACE("g_DownloadManager.Update");
+ 	g_DownloadManager.Update();
+ 
++	FRAME_TRACE("g_Discord.Update");
+ 	g_Discord.Update();
+ 
++	FRAME_TRACE("g_OSD.Update");
+ 	g_OSD.Update();
+ 
+ 	_dbg_assert_(graphicsContext != nullptr);
+ 	_dbg_assert_(g_screenManager != nullptr);
+ 
++	FRAME_TRACE("g_GameManager.Update");
+ 	g_GameManager.Update();
+ 
+ 	if (GetUIState() != UISTATE_INGAME) {
++		FRAME_TRACE("g_BackgroundAudio.Update");
+ 		// Note: We do this from NativeFrame so that the graphics context is
+ 		// guaranteed valid, to be safe - g_gameInfoCache messes around with textures.
+ 		g_BackgroundAudio.Update();
+ 	}
+ 
++	FRAME_TRACE("g_iconCache.FrameUpdate");
+ 	g_iconCache.FrameUpdate();
+ 
+ 	if (g_audioBackend) {
++		FRAME_TRACE("g_audioBackend->FrameUpdate");
+ 		g_audioBackend->FrameUpdate(g_Config.bAutoSwitchAudioDevice);
+ 	}
+ 
+@@ -1154,8 +1176,10 @@ void NativeFrame(GraphicsContext *graphicsContext) {
+ 		debugFlags |= Draw::DebugFlags::PROFILE_TIMESTAMPS;
+ 	if (g_Config.bGpuLogProfiler)
+ 		debugFlags |= Draw::DebugFlags::PROFILE_SCOPES;
++	FRAME_TRACE("g_draw->BeginFrame");
+ 	g_draw->BeginFrame(debugFlags);
+ 
++	FRAME_TRACE("ProcessScreenSwitches");
+ 	g_screenManager->ProcessScreenSwitches();
+ 
+ 	// Process queued events.
