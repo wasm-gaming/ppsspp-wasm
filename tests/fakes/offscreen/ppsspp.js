@@ -1,0 +1,28 @@
+// Renders, and never blits: every clear lands in a framebuffer of its own.
+//
+// The second kind of "nothing was drawn", and the reason the runner counts GL calls
+// rather than only reading pixels. From the canvas alone this is indistinguishable from
+// a port whose render loop never runs at all — same BLANK, same zero opaque pixels —
+// and the two have nothing in common as bugs.
+export default async function createPpsspp(moduleArg = {}) {
+  return Object.assign({}, moduleArg, {
+    callMain() {
+      const gl = moduleArg.canvas.getContext('webgl2');
+      if (!gl) throw new Error('no webgl2 context');
+
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 64, 64, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+
+      const draw = () => {
+        gl.clearColor(0.9, 0.2, 0.4, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        requestAnimationFrame(draw);
+      };
+      requestAnimationFrame(draw);
+    },
+  });
+}

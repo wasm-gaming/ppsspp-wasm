@@ -168,10 +168,21 @@ would be the thing to distrust. The sample is taken with `drawImage`, not
 `gl.readPixels`, because patch 0009 means a frame can be sitting half-finished between
 animation frames and the instrument has no business touching those bindings.
 
-**`make smoke-selftest` points the runner at things that fail on purpose.** Five fakes
+**A blank canvas has two causes, so the runner also counts GL calls.** A port issuing no
+draw calls at all is a render loop that is not running; one issuing thousands while never
+binding the default framebuffer is a renderer that never blits. Both read back as an
+untouched canvas, and they have nothing in common as bugs. The same `getContext` wrapper
+counts draws, clears and framebuffer binds, and tracks which framebuffer was bound when
+each landed. Alongside it the runner counts animation frames scheduled by anything other
+than the harness itself — Emscripten drives `emscripten_set_main_loop(fn, 0)` from
+`requestAnimationFrame`, so a main loop that is really running shows up there. A number
+that grows does not prove `oneIteration()` is what grew it; a number that stays at zero is
+strong evidence nothing registered a loop.
+
+**`make smoke-selftest` points the runner at things that fail on purpose.** Six fakes
 in `tests/fakes/` — one that draws, one that only clears, one that never asks for a
-context, one that holds the main thread, one whose factory never settles — each landing
-on exactly one verdict. A runner that reports success whatever it is shown is worse than
+context, one that renders into a framebuffer it never blits, one that holds the main
+thread, one whose factory never settles — each landing on exactly one verdict. A runner that reports success whatever it is shown is worse than
 no runner, because a round then ends in a green tick that means nothing.
 
 In CI both run as one separate job: the emsdk container has no browser, and moving a
