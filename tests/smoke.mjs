@@ -13,12 +13,19 @@
  * cannot be answered, and the runner says so in one line instead of hanging. A blocked
  * main thread is not an absence of evidence here; it is the measurement.
  *
+ * The heartbeat is not the whole verdict any more. It says the tab survived; it cannot
+ * say a picture was drawn, and a build that comes up, registers a loop and paints
+ * nothing produces the identical number. So the run also reads the canvas back and
+ * grades what it finds — see "reading the picture back" in the harness below.
+ *
  * No Playwright, no test framework: Node 22 has a `WebSocket` client and Chromium
  * speaks CDP, so the whole thing is the standard library plus a browser that is already
  * installed. `make smoke` runs it; CI runs the same command against the artifacts it
- * just built.
+ * just built. `make smoke-selftest` points it at fakes that fail on purpose, because an
+ * instrument that cannot fail is not an instrument.
  *
- * Usage: node tests/smoke.mjs [--artifacts=src/native] [--timeout=90] [--chromium=PATH]
+ * Usage: node tests/smoke.mjs [--artifacts=src/native] [--timeout=90] [--settle=8]
+ *                             [--pool=16] [--chromium=PATH]
  */
 
 import { createServer } from 'node:http';
@@ -37,6 +44,10 @@ const args = Object.fromEntries(
 
 const ARTIFACTS = resolve(args.artifacts ?? 'src/native');
 const TIMEOUT_MS = Number(args.timeout ?? 90) * 1000;
+// How long a run keeps going after it has everything it needs. A main loop that
+// registers and then dies on its first frame is not a working main loop, and under
+// SwiftShader the first frame with anything on it takes a while to arrive.
+const SETTLE_MS = Number(args.settle ?? 8) * 1000;
 // Sized for a deadlock, not for speed. Emscripten grows its worker pool by returning
 // to the event loop; PPSSPP's render thread does not return to the event loop while it
 // waits for a frame. So a pool that runs out mid-boot does not slow down — it stops:
@@ -73,6 +84,8 @@ const HARNESS = `<!doctype html>
     stage: 'loading',
     heartbeat: 0,
     loopTurns: 0,
+    contexts: 0,
+    pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, hash: null, error: null },
     stdout: [],
     stderr: [],
     events: [],
@@ -90,6 +103,78 @@ const HARNESS = `<!doctype html>
   const tick = () => { state.loopTurns++; requestAnimationFrame(tick); };
   requestAnimationFrame(tick);
 
+  const canvas = document.getElementById('canvas');
+
+  // -- reading the picture back ---------------------------------------------
+  //
+  // loopTurns proves the tab lives. It cannot prove anything was drawn, and a build
+  // that comes up, registers a loop and paints nothing at all produces the identical
+  // number. This is the part that can tell those apart.
+  //
+  // A WebGL drawing buffer is cleared the instant it is composited, so by the time
+  // anything out here looks at it there is nothing left to see. preserveDrawingBuffer
+  // is the documented way to keep it, and it has to be forced *before* the module makes
+  // its context: Emscripten passes its own attributes and never asks for this.
+  //
+  // Said out loud as an observer effect, because it is one — the same family as the
+  // -sASSERTIONS tripwire that killed SDL_CreateWindow. It costs a buffer copy per
+  // frame and removes the implicit clear between frames. PPSSPP clears its own target
+  // every frame, so it should not change what is drawn; "should" is the honest strength
+  // of that claim, and a DRAWING verdict that only appears with this flag on would be
+  // the thing to distrust.
+  const realGetContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+    if (type === 'webgl2' || type === 'webgl' || type === 'experimental-webgl') {
+      state.contexts++;
+      attrs = Object.assign({}, attrs || {}, { preserveDrawingBuffer: true });
+    }
+    return realGetContext.call(this, type, attrs);
+  };
+
+  // Sampled through drawImage rather than gl.readPixels on purpose. readPixels reads
+  // whichever framebuffer is bound, so it would have to bind, read and rebind — and
+  // patch 0009 means a frame can be sitting half-finished between animation frames,
+  // with GL state the instrument has no business touching. drawImage asks the browser
+  // for the canvas's own contents and leaves those bindings alone.
+  //
+  // 120x68 is a quarter of the canvas: small enough to summarise four times a second,
+  // large enough that a menu does not average down to one colour.
+  const SHOT_W = 120, SHOT_H = 68;
+  const shot = document.createElement('canvas');
+  shot.width = SHOT_W;
+  shot.height = SHOT_H;
+  const shotCtx = shot.getContext('2d', { willReadFrequently: true });
+
+  const sample = () => {
+    let data;
+    try {
+      shotCtx.clearRect(0, 0, SHOT_W, SHOT_H);
+      shotCtx.drawImage(canvas, 0, 0, SHOT_W, SHOT_H);
+      data = shotCtx.getImageData(0, 0, SHOT_W, SHOT_H).data;
+    } catch (e) {
+      state.pixels.error = String(e);
+      return;
+    }
+    const colours = new Set();
+    let opaque = 0;
+    let hash = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] !== 0) opaque++;
+      colours.add((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]);
+      hash = (Math.imul(hash, 31) + data[i] + data[i + 1] * 3 + data[i + 2] * 7 + data[i + 3] * 11) >>> 0;
+    }
+    const p = state.pixels;
+    p.samples++;
+    p.opaque = opaque;
+    p.distinct = colours.size;
+    // The best sample, not the last. A UI that draws and then blanks still drew, and
+    // the run should say so rather than depend on when the last probe landed.
+    if (colours.size > p.best) p.best = colours.size;
+    if (p.hash === null) p.hash = hash;
+    else if (p.hash !== hash) { p.changed++; p.hash = hash; }
+  };
+  setInterval(sample, 250);
+
   const keep = (bucket, text) => {
     state[bucket].push(text);
     if (state[bucket].length > 400) state[bucket].shift();
@@ -104,7 +189,7 @@ const HARNESS = `<!doctype html>
     state.stage = 'instantiating';
     say({ kind: 'stage', text: 'instantiating' });
     const mod = await createPpsspp({
-      canvas: document.getElementById('canvas'),
+      canvas,
       pthreadPoolSize: ${POOL},
       // The glue is served under /native/ and the page is at /, which is the shape of
       // a real host — the emulator inside node_modules, the page anywhere. Without
@@ -294,6 +379,20 @@ const record = (kind, text) => {
   console.log(line);
 };
 
+/**
+ * Did anything get drawn? One colour is a clear, not a picture — every renderer clears,
+ * so a flat canvas is exactly what a build that comes up and paints nothing looks like.
+ * Two samples, because one is not a trend and the first one can land before the first
+ * frame does.
+ */
+const drew = (p) => (p.pixels?.best ?? 0) > 1 && (p.pixels?.samples ?? 0) >= 2;
+
+const vitals = (p) =>
+  `stage=${p.stage} heartbeat=${p.heartbeat} loopTurns=${p.loopTurns} contexts=${p.contexts ?? 0} ` +
+  (p.pixels
+    ? `pixels=${p.pixels.samples} samples, best ${p.pixels.best} colours, ${p.pixels.changed} changed, ${p.pixels.opaque} opaque`
+    : 'pixels=none');
+
 async function main() {
   if (!CHROMIUM) {
     console.error('No Chromium found. Pass --chromium=PATH or set CHROMIUM_PATH.');
@@ -396,16 +495,18 @@ async function main() {
     try {
       const { result } = await browser.send(
         'Runtime.evaluate',
-        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error})', returnByValue: true },
+        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,pixels:__smoke.pixels})', returnByValue: true },
         sessionId,
         2000,
       );
       probe = JSON.parse(result.value);
       blockedSince = null;
-      if (probe.stage === 'returned' && probe.loopTurns > 0) {
-        // Let it run a little past the finish line: a main loop that registers and
-        // then dies on its first frame is not a working main loop.
-        if (Date.now() - started > 8000) break;
+      if (probe.stage === 'returned' && probe.loopTurns > 0 && drew(probe)) {
+        // Only a run that has its answer stops early. A build that comes up and never
+        // draws now costs the whole timeout, which is the right price: "nothing was
+        // drawn" is the slowest thing here to be sure of, and calling it early is how
+        // an instrument starts lying.
+        if (Date.now() - started > SETTLE_MS) break;
       }
       if (probe.stage === 'threw') break;
     } catch {
@@ -448,13 +549,37 @@ async function main() {
   } else if (probe.loopTurns === 0) {
     verdict = 'ALIVE BUT STALLED — callMain returned and the main thread answers, but the browser never handed it back to the page.';
     code = 1;
+  } else if (!probe.pixels || probe.pixels.samples === 0) {
+    // Exit 2, not 1. The other verdicts are findings about the port; this one is a
+    // finding about the runner, and reporting a broken instrument as a failing build
+    // is how a red run gets blamed on the wrong half.
+    verdict =
+      `NO PICTURE READ — the tab lived (${probe.loopTurns} event-loop turns) but the canvas was never sampled` +
+      (probe.pixels?.error
+        ? `: ${probe.pixels.error}`
+        : '. The instrument failed, so this run says nothing about the port.');
+    code = 2;
+  } else if (probe.pixels.opaque === 0) {
+    verdict =
+      `BLANK — callMain returned and the main thread kept turning (${probe.loopTurns} turns), but nothing was ever presented to the canvas across ${probe.pixels.samples} samples. ` +
+      (probe.contexts
+        ? `${probe.contexts} WebGL context(s) were created, so it asked for a surface and never painted one.`
+        : 'No WebGL context was ever created, so it never got as far as asking for a surface.');
+    code = 1;
+  } else if (probe.pixels.best <= 1) {
+    verdict = `CLEARED, NOT DRAWN — the canvas is one flat colour in every one of ${probe.pixels.samples} samples. Something owns a context and clears it; nothing draws on top.`;
+    code = 1;
   } else {
-    verdict = `RUNNING — callMain returned and the main thread kept turning: ${probe.loopTurns} event-loop turns, ${probe.heartbeat} heartbeats. This says the tab survives, not that PPSSPP drew anything.`;
+    verdict =
+      `DRAWING — ${probe.pixels.best} distinct colours on the canvas, and ${probe.pixels.changed} of ${probe.pixels.samples} samples differed from the one before, over ${probe.loopTurns} event-loop turns and ${probe.heartbeat} heartbeats. ` +
+      (probe.pixels.changed > 0
+        ? 'PPSSPP put a picture on the screen and kept changing it.'
+        : 'PPSSPP put a picture on the screen; it did not change while it was watched.');
     code = 0;
   }
 
   console.log('\n' + '='.repeat(72));
-  if (probe) console.log(`stage=${probe.stage} heartbeat=${probe.heartbeat} loopTurns=${probe.loopTurns}`);
+  if (probe) console.log(vitals(probe));
   console.log(verdict);
   console.log('='.repeat(72));
 
@@ -463,7 +588,7 @@ async function main() {
     await appendFile(
       process.env.GITHUB_STEP_SUMMARY,
       `## Browser smoke\n\n**${verdict}**\n\n` +
-        (probe ? `\`stage=${probe.stage} heartbeat=${probe.heartbeat} loopTurns=${probe.loopTurns}\`\n\n` : '') +
+        (probe ? `\`${vitals(probe)}\`\n\n` : '') +
         '```\n' + log.slice(-120).join('\n') + '\n```\n',
     );
   }
