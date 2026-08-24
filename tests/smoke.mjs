@@ -97,6 +97,7 @@ const HARNESS = `<!doctype html>
     heartbeat: 0,
     loopTurns: 0,
     contexts: 0,
+    contextAttrs: null,
     foreignFrames: 0,
     gl: {
       draws: 0, drawsToCanvas: 0, clears: 0, clearsToCanvas: 0,
@@ -220,6 +221,17 @@ const HARNESS = `<!doctype html>
     }
     state.contexts++;
     const ctx = realGetContext.call(this, type, Object.assign({}, attrs || {}, { preserveDrawingBuffer: true }));
+    // Reported, not overridden. A drawing buffer with an alpha channel that the
+    // emulator leaves at zero is transparent, and drawImage composites a zero-alpha
+    // pixel to nothing — which reads back as both "no opaque pixel" and "one colour",
+    // the exact pair of numbers this run keeps producing. If that is what is happening,
+    // the fix belongs in the port, not in here: a harness that quietly forces alpha off
+    // would go green while everything it ships stayed broken.
+    try {
+      if (ctx && ctx.getContextAttributes) state.contextAttrs = ctx.getContextAttributes();
+    } catch (e) {
+      state.contextAttrs = { error: String(e) };
+    }
     return ctx ? watch(ctx) : ctx;
   };
 
@@ -479,8 +491,9 @@ const record = (kind, text) => {
  */
 const drew = (p) => (p.pixels?.best ?? 0) > 1 && (p.pixels?.samples ?? 0) >= 2;
 
+let shotNote = '';
 const vitals = (p) =>
-  `stage=${p.stage} heartbeat=${p.heartbeat} loopTurns=${p.loopTurns} foreignFrames=${p.foreignFrames ?? 0} contexts=${p.contexts ?? 0} ` +
+  `stage=${p.stage} heartbeat=${p.heartbeat} loopTurns=${p.loopTurns} foreignFrames=${p.foreignFrames ?? 0} contexts=${p.contexts ?? 0}${shotNote} ` +
   (p.pixels
     ? `pixels=${p.pixels.samples} samples, best ${p.pixels.best} colours, ${p.pixels.changed} changed, ${p.pixels.opaque} opaque`
     : 'pixels=none');
@@ -495,6 +508,7 @@ const glNote = (p) =>
   p.gl
     ? ` GL: ${p.gl.draws} draw calls (${p.gl.drawsToCanvas} with the default framebuffer bound), ${p.gl.clears} clears (${p.gl.clearsToCanvas} to it), ${p.gl.binds} framebuffer binds ` +
       `— ${JSON.stringify(p.gl.bindTargets ?? {})}, arriving as ${JSON.stringify(p.gl.bindKinds ?? {})}. ` +
+      `Context attributes: ${JSON.stringify(p.contextAttrs ?? null)}. ` +
       `Something other than the harness asked for ${p.foreignFrames ?? 0} animation frames.`
     : '';
 
@@ -604,7 +618,7 @@ async function main() {
     try {
       const { result } = await browser.send(
         'Runtime.evaluate',
-        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,foreignFrames:__smoke.foreignFrames,gl:__smoke.gl,pixels:__smoke.pixels})', returnByValue: true },
+        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,contextAttrs:__smoke.contextAttrs,foreignFrames:__smoke.foreignFrames,gl:__smoke.gl,pixels:__smoke.pixels})', returnByValue: true },
         sessionId,
         2000,
       );
@@ -627,6 +641,20 @@ async function main() {
         break;
       }
     }
+  }
+
+  // A second opinion, from the compositor rather than from the page. Page.captureScreenshot
+  // returns what the browser would actually show, which is a different path from the
+  // drawImage sampling above — different enough that if the two disagree, the disagreement
+  // is itself the finding. The length of the PNG is a crude proxy for "is there anything
+  // in it", and is labelled as crude: a blank rectangle compresses to almost nothing.
+  let shotBytes = null;
+  try {
+    const shot = await browser.send('Page.captureScreenshot', { format: 'png' }, sessionId, 5000);
+    shotBytes = Math.round((shot.data?.length ?? 0) * 3 / 4);
+    shotNote = ` screenshot=${shotBytes}B`;
+  } catch {
+    // A page that cannot answer has already been reported as BLOCKED; nothing to add.
   }
 
   // ---- the verdict ----
