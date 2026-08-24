@@ -1,5 +1,6 @@
 .PHONY: build typecheck typecheck-tests typecheck-demo test docs site preview preview-stop \
-        native-checkout native-clean wasm wasm-release wasm-config wasm-build publish publish-dry-run
+        native-checkout native-clean wasm wasm-release wasm-config wasm-build smoke \
+        publish publish-dry-run
 
 PORT ?= 8020
 
@@ -68,6 +69,24 @@ CMAKE ?= cmake
 # Set it empty to get the stop-at-first-error behaviour back: `make wasm WASM_KEEP_GOING=`.
 WASM_KEEP_GOING ?= -k 0
 
+# Instruments, and they are deliberately link-only.
+#
+# Every flag here changes the JS glue emcc emits, not a single object file, so
+# `make wasm DEBUG=1` after a normal round is a *relink* — a couple of minutes — rather
+# than a rebuild of 1118 targets. That is what makes measuring cheaper than guessing,
+# which is the whole reason the port has one of these at all.
+#
+#   ASSERTIONS=2         the runtime's own checks, including the ones that name a
+#                        blocking call on the browser's main thread
+#   STACK_OVERFLOW_CHECK a stack overflow that says so instead of corrupting memory
+#   PTHREADS_DEBUG       every thread create, join and exit, which is the half of this
+#                        port with no other window into it
+#   -g2                  function names survive into the wasm, so a stack trace reads
+#                        as C++ rather than as wasm-function[10427]
+WASM_DEBUG_FLAGS := -sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2 -sPTHREADS_DEBUG=1 -g2
+
+WASM_LINK_FLAGS ?= $(if $(DEBUG),$(WASM_DEBUG_FLAGS),)
+
 # Fetch the pinned upstream commit and apply this project's patch series onto it.
 # `--filter=blob:none` because a full PPSSPP history is around a gigabyte and the
 # build needs one revision of it.
@@ -128,6 +147,7 @@ WASM_CMAKE_ARGS := \
 
 wasm-config:
 	emcmake $(CMAKE) -S "$(NATIVE_DIR)" -B "$(WASM_BUILD_DIR)" $(WASM_CMAKE_ARGS) \
+		-DCMAKE_EXE_LINKER_FLAGS="$(WASM_LINK_FLAGS)" \
 		-DCMAKE_BUILD_TYPE=$(if $(RELEASE),Release,RelWithDebInfo)
 
 wasm-build:
@@ -138,6 +158,15 @@ wasm-build:
 	@[ -f "$(WASM_BUILD_DIR)/ppsspp.data" ] && cp "$(WASM_BUILD_DIR)/ppsspp.data" src/native/ || true
 
 wasm: native-checkout wasm-config wasm-build
+
+# Boot what was just built, in a real browser, and say whether the tab survived.
+#
+# `make test` proves the contract against a fake and needs no emulator; this proves the
+# port and needs nothing else. See the header of tests/smoke.mjs for why the signal is
+# a heartbeat on the browser's main thread rather than a screenshot.
+smoke:
+	node tests/smoke.mjs $(if $(SMOKE_ARTIFACTS),--artifacts=$(SMOKE_ARTIFACTS),) \
+		$(if $(SMOKE_TIMEOUT),--timeout=$(SMOKE_TIMEOUT),)
 
 wasm-release:
 	$(MAKE) wasm RELEASE=1

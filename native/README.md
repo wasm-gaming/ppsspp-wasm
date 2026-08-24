@@ -116,6 +116,51 @@ a cold runner, 2146 files written, so `EM_COMPILER_WRAPPER` does reach the real
 compiler. Round 9 proved the payoff: the same build, one patch further, went from
 **9m47s to 2m52s** by restoring what round 8 saved.
 
+### A round ends in a browser, not at "it linked"
+
+The port's remaining problem is invisible to `ninja`. PPSSPP compiles, links, starts,
+initialises SDL3 and its thread manager — and then the tab stops. A build log reports
+none of that, so a round that ends at a green compile buys nothing about the only
+question still open.
+
+`make smoke` boots the artifacts in a real browser and says what happened. It serves
+`src/native/` with COOP/COEP set directly — no service worker in the way — launches
+headless Chromium, and drives it over CDP. There is no Playwright and no test framework:
+Node 22 has a `WebSocket` client and Chromium speaks CDP, which is the whole dependency
+list.
+
+**The signal is a heartbeat on the browser's main thread.** A `setInterval` and a
+`requestAnimationFrame` chain are installed *before* `callMain()`, and the runner then
+asks the page for their counts from outside. If `main()` blocks the main thread — which
+is exactly what PPSSPP's GL path does on every other platform, and why it is being
+ported — the interval cannot fire and the evaluation cannot be answered. The runner
+gives that its own verdict rather than hanging:
+
+```
+BLOCKED — the main thread stopped answering at stage "callMain".
+```
+
+A tab that stops answering is not missing evidence here; it *is* the measurement. The
+runner's own two states were checked against fakes that pass and deliberately block
+before it was pointed at the emulator, because an instrument that cannot fail is not an
+instrument.
+
+In CI it is a separate job: the emsdk container has no browser, and moving a 40 MB
+artifact to a runner that already has Chrome costs less than installing one per round.
+It reports into the run summary beside the compile result.
+
+### The instruments
+
+`make wasm DEBUG=1` links with `-sASSERTIONS=2`, `-sSTACK_OVERFLOW_CHECK=2`,
+`-sPTHREADS_DEBUG=1` and `-g2` — the runtime's own checks, a stack overflow that says
+so, a line for every thread create and join, and function names that survive into the
+wasm so a trace reads as C++ rather than as `wasm-function[10427]`.
+
+Every one of those is a **link** flag. Turning them on changes the glue emcc emits and
+not one object file, so an instrumented round after a normal one is a relink of a couple
+of minutes rather than a rebuild of 1118 targets. That is deliberate, and it is what
+makes measuring cheaper than guessing. The `debug` input on the CI workflow sets it.
+
 ### The shape of the Emscripten branch in CMake
 
 | Choice | Why |
@@ -239,6 +284,18 @@ what makes offering the work upstream a matter of sending the series.
 
 Rolling forward is: bump `REV` in `UPSTREAM`, run `make native-checkout`, fix whatever
 fails to apply, regenerate.
+
+**`native/ppsspp/` is build output, and it is always dirty.** It is gitignored
+(`.gitignore`), it is a git repository of its own, and after `make native-checkout` its
+working tree carries every patch in the series as an uncommitted modification — that is
+what "checked out" means here. Nothing in it is ever committed, and a tool that walks
+the tree looking for unsaved work will flag it on every session. The state to compare
+against is not "clean" but "pinned revision plus the series", which
+`make native-checkout` reproduces from nothing.
+
+Which is also how a patch is written: edit the file in that tree, then
+`git -C native/ppsspp diff <path>` is the patch. `make native-clean` throws the whole
+thing away.
 
 ### Patches that land inside a submodule
 
