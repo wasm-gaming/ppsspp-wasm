@@ -87,6 +87,20 @@ WASM_DEBUG_FLAGS := -sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2 -sPTHREADS_DEBUG=1 -
 
 WASM_LINK_FLAGS ?= $(if $(DEBUG),$(WASM_DEBUG_FLAGS),)
 
+# `make wasm GLTRACE=1` switches on the push/pull trace GLRenderManager already carries:
+# which frame the emu thread began, which task it pushed, which the render thread pulled
+# and ran, which wait either is sitting in. This is the one instrument that sees both
+# sides of that handshake, and it is what to reach for when one of them goes quiet.
+#
+# Unlike DEBUG this is a *compile* define, so it costs a recompile — but patch 0010
+# scopes it to the single file with the VLOGs in it, so that is one object and not 1118.
+# `make wasm FRAMETRACE=1` names each call in a frame's update half as it is entered.
+# Everything there runs before g_draw->BeginFrame(), which is the first thing in a frame
+# that logs anything of its own — so a thread that stops above that line stops
+# invisibly, and this is what makes it say which call it stopped in. Patch 0011, and
+# scoped to one file for the same reason as the OpenGL trace.
+WASM_TRACE_ARGS := $(if $(GLTRACE),-DPPSSPP_GL_TRACE=ON,) $(if $(FRAMETRACE),-DPPSSPP_FRAME_TRACE=ON,)
+
 # Fetch the pinned upstream commit and apply this project's patch series onto it.
 # `--filter=blob:none` because a full PPSSPP history is around a gigabyte and the
 # build needs one revision of it.
@@ -147,7 +161,7 @@ WASM_CMAKE_ARGS := \
 
 wasm-config:
 	emcmake $(CMAKE) -S "$(NATIVE_DIR)" -B "$(WASM_BUILD_DIR)" $(WASM_CMAKE_ARGS) \
-		-DCMAKE_EXE_LINKER_FLAGS="$(WASM_LINK_FLAGS)" \
+		-DCMAKE_EXE_LINKER_FLAGS="$(WASM_LINK_FLAGS)" $(WASM_TRACE_ARGS) \
 		-DCMAKE_BUILD_TYPE=$(if $(RELEASE),Release,RelWithDebInfo)
 
 wasm-build:
@@ -167,7 +181,8 @@ wasm: native-checkout wasm-config wasm-build
 smoke:
 	node tests/smoke.mjs $(if $(SMOKE_ARTIFACTS),--artifacts=$(SMOKE_ARTIFACTS),) \
 		$(if $(SMOKE_TIMEOUT),--timeout=$(SMOKE_TIMEOUT),) \
-		$(if $(SMOKE_SETTLE),--settle=$(SMOKE_SETTLE),)
+		$(if $(SMOKE_SETTLE),--settle=$(SMOKE_SETTLE),) \
+		$(if $(SMOKE_LOGLEVEL),--loglevel=$(SMOKE_LOGLEVEL),)
 
 # Check the instrument against fakes that fail on purpose. Needs a browser but no
 # emulator, which is the opposite of `make smoke` and the reason it is its own target:

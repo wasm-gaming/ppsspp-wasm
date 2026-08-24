@@ -179,6 +179,20 @@ than the harness itself — Emscripten drives `emscripten_set_main_loop(fn, 0)` 
 that grows does not prove `oneIteration()` is what grew it; a number that stays at zero is
 strong evidence nothing registered a loop.
 
+**The run tells PPSSPP to talk, and that is not optional.** `Config::Load()` calls
+`LogManager::LoadConfig()`, which sets *every* channel to `LERROR` when the ini has no
+`[Log]` section — and a smoke run always boots on a fresh memory stick, so it never has
+one. `LINFO` is 4, `LERROR` is 2, and `LogLine` drops anything numerically above the
+channel's level, so from the moment the config lands the whole boot is invisible: no
+"Entering separate emu thread", no GL version string, nothing. What survives is only what
+was logged *before* the config loaded, which is why a transcript appears to stop dead at
+the VFS registrations.
+
+`NativeInit` applies the command line after the config, so `callMain(['--loglevel=4'])`
+wins, and that is what the harness passes. `--loglevel=0` on the runner passes no flag
+and restores the mute behaviour. Round 18 mistook the silence for a stalled emu thread;
+it was the default log level.
+
 **`make smoke-selftest` points the runner at things that fail on purpose.** Six fakes
 in `tests/fakes/` — one that draws, one that only clears, one that never asks for a
 context, one that renders into a framebuffer it never blits, one that holds the main

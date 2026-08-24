@@ -25,7 +25,7 @@
  * instrument that cannot fail is not an instrument.
  *
  * Usage: node tests/smoke.mjs [--artifacts=src/native] [--timeout=90] [--settle=8]
- *                             [--pool=16] [--chromium=PATH]
+ *                             [--pool=16] [--loglevel=4] [--chromium=PATH]
  */
 
 import { createServer } from 'node:http';
@@ -48,6 +48,18 @@ const TIMEOUT_MS = Number(args.timeout ?? 90) * 1000;
 // registers and then dies on its first frame is not a working main loop, and under
 // SwiftShader the first frame with anything on it takes a while to arrive.
 const SETTLE_MS = Number(args.settle ?? 8) * 1000;
+// PPSSPP's own log level, passed to callMain as --loglevel=N.
+//
+// Not a nicety. Config::Load() calls LogManager::LoadConfig(), which sets *every*
+// channel to LERROR when the ini has no [Log] section — and a smoke run always boots on
+// a fresh memory stick, so it never does. LINFO is 4 and LERROR is 2, and LogLine drops
+// anything numerically above the channel's level, so from that moment on the entire boot
+// is invisible: no "Entering separate emu thread", no GL version string, nothing. Round
+// 18 read that silence as a stalled emu thread, and the silence does not support it.
+//
+// NativeInit applies the command line *after* the config, so this wins. 0 passes no flag
+// at all and restores the old, mute behaviour.
+const LOG_LEVEL = Number(args.loglevel ?? 4);
 // Sized for a deadlock, not for speed. Emscripten grows its worker pool by returning
 // to the event loop; PPSSPP's render thread does not return to the event loop while it
 // waits for a frame. So a pool that runs out mid-boot does not slow down — it stops:
@@ -85,8 +97,13 @@ const HARNESS = `<!doctype html>
     heartbeat: 0,
     loopTurns: 0,
     contexts: 0,
+    contextAttrs: null,
     foreignFrames: 0,
-    gl: { draws: 0, drawsToCanvas: 0, clears: 0, clearsToCanvas: 0, binds: 0, onCanvas: true },
+    gl: {
+      draws: 0, drawsToCanvas: 0, clears: 0, clearsToCanvas: 0,
+      binds: 0, bindsDefault: 0, bindTargets: {}, firstBinds: [], bindKinds: {},
+      onCanvas: true,
+    },
     pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, hash: null, error: null },
     stdout: [],
     stderr: [],
@@ -165,9 +182,33 @@ const HARNESS = `<!doctype html>
     const realBind = ctx.bindFramebuffer;
     ctx.bindFramebuffer = function (target, fb) {
       g.binds++;
+      // Named rather than merely counted. "No draw reached the canvas" is a claim about
+      // a bind that never happened, and a claim about a call nobody saw is worth less
+      // than the call itself. PPSSPP's fbo_unbind() binds GL_FRAMEBUFFER with a zero
+      // name, which Emscripten forwards as null — so if the backbuffer is ever made the
+      // render target, it appears here as FRAMEBUFFER:null and nowhere else.
+      const name = target === this.FRAMEBUFFER ? 'FRAMEBUFFER'
+        : target === this.DRAW_FRAMEBUFFER ? 'DRAW_FRAMEBUFFER'
+        : target === this.READ_FRAMEBUFFER ? 'READ_FRAMEBUFFER'
+        : String(target);
+      // Falsy, not strictly null. Round 23 counted 7098 binds and not one null, which
+      // read as "PPSSPP never targets the backbuffer" — and the emulator's own code says
+      // that cannot be. The gap is here: Emscripten's glBindFramebuffer forwards
+      // GL.framebuffers[name], and index 0 is a hole in that array, so a zero name
+      // arrives as undefined. WebGL accepts undefined as null and renders fine; a
+      // strict === null test does not see it at all.
+      const isDefault = !fb;
+      const key = name + (isDefault ? ':default' : ':fbo');
+      g.bindTargets[key] = (g.bindTargets[key] || 0) + 1;
+      // Kept so the next round proves this rather than re-deriving it: what a default
+      // bind actually arrives as.
+      const kind = fb === null ? 'null' : fb === undefined ? 'undefined' : typeof fb;
+      g.bindKinds[kind] = (g.bindKinds[kind] || 0) + 1;
+      if (isDefault) g.bindsDefault++;
+      if (g.firstBinds.length < 24) g.firstBinds.push(key);
       // FRAMEBUFFER and DRAW_FRAMEBUFFER decide where a draw lands. READ_FRAMEBUFFER
       // does not, so it must not move this flag.
-      if (target === this.FRAMEBUFFER || target === this.DRAW_FRAMEBUFFER) g.onCanvas = fb === null;
+      if (target === this.FRAMEBUFFER || target === this.DRAW_FRAMEBUFFER) g.onCanvas = isDefault;
       return realBind.call(this, target, fb);
     };
     return ctx;
@@ -180,6 +221,17 @@ const HARNESS = `<!doctype html>
     }
     state.contexts++;
     const ctx = realGetContext.call(this, type, Object.assign({}, attrs || {}, { preserveDrawingBuffer: true }));
+    // Reported, not overridden. A drawing buffer with an alpha channel that the
+    // emulator leaves at zero is transparent, and drawImage composites a zero-alpha
+    // pixel to nothing — which reads back as both "no opaque pixel" and "one colour",
+    // the exact pair of numbers this run keeps producing. If that is what is happening,
+    // the fix belongs in the port, not in here: a harness that quietly forces alpha off
+    // would go green while everything it ships stayed broken.
+    try {
+      if (ctx && ctx.getContextAttributes) state.contextAttrs = ctx.getContextAttributes();
+    } catch (e) {
+      state.contextAttrs = { error: String(e) };
+    }
     return ctx ? watch(ctx) : ctx;
   };
 
@@ -270,7 +322,7 @@ const HARNESS = `<!doctype html>
 
     state.stage = 'callMain';
     say({ kind: 'stage', text: 'callMain' });
-    mod.callMain([]);
+    mod.callMain(${JSON.stringify(LOG_LEVEL > 0 ? [`--loglevel=${LOG_LEVEL}`] : [])});
 
     state.stage = 'returned';
     say({ kind: 'stage', text: 'callMain returned', heartbeatDuringCall: state.heartbeat - before });
@@ -439,8 +491,9 @@ const record = (kind, text) => {
  */
 const drew = (p) => (p.pixels?.best ?? 0) > 1 && (p.pixels?.samples ?? 0) >= 2;
 
+let shotNote = '';
 const vitals = (p) =>
-  `stage=${p.stage} heartbeat=${p.heartbeat} loopTurns=${p.loopTurns} foreignFrames=${p.foreignFrames ?? 0} contexts=${p.contexts ?? 0} ` +
+  `stage=${p.stage} heartbeat=${p.heartbeat} loopTurns=${p.loopTurns} foreignFrames=${p.foreignFrames ?? 0} contexts=${p.contexts ?? 0}${shotNote} ` +
   (p.pixels
     ? `pixels=${p.pixels.samples} samples, best ${p.pixels.best} colours, ${p.pixels.changed} changed, ${p.pixels.opaque} opaque`
     : 'pixels=none');
@@ -453,7 +506,9 @@ const vitals = (p) =>
  */
 const glNote = (p) =>
   p.gl
-    ? ` GL: ${p.gl.draws} draw calls (${p.gl.drawsToCanvas} with the default framebuffer bound), ${p.gl.clears} clears (${p.gl.clearsToCanvas} to it), ${p.gl.binds} framebuffer binds. ` +
+    ? ` GL: ${p.gl.draws} draw calls (${p.gl.drawsToCanvas} with the default framebuffer bound), ${p.gl.clears} clears (${p.gl.clearsToCanvas} to it), ${p.gl.binds} framebuffer binds ` +
+      `— ${JSON.stringify(p.gl.bindTargets ?? {})}, arriving as ${JSON.stringify(p.gl.bindKinds ?? {})}. ` +
+      `Context attributes: ${JSON.stringify(p.contextAttrs ?? null)}. ` +
       `Something other than the harness asked for ${p.foreignFrames ?? 0} animation frames.`
     : '';
 
@@ -545,7 +600,11 @@ async function main() {
   await browser.send('Inspector.enable', {}, sessionId);
   await browser.send('Runtime.addBinding', { name: '__smokeReport' }, sessionId);
 
-  record('runner', `serving ${ARTIFACTS} at ${origin}, pool ${POOL}, timeout ${TIMEOUT_MS / 1000}s`);
+  record(
+    'runner',
+    `serving ${ARTIFACTS} at ${origin}, pool ${POOL}, timeout ${TIMEOUT_MS / 1000}s, ` +
+      (LOG_LEVEL > 0 ? `PPSSPP log level ${LOG_LEVEL}` : 'PPSSPP log level left at its default'),
+  );
   await browser.send('Page.navigate', { url: origin + '/' }, sessionId);
 
   // Poll the page rather than waiting on it. Each probe is an independent question —
@@ -559,7 +618,7 @@ async function main() {
     try {
       const { result } = await browser.send(
         'Runtime.evaluate',
-        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,foreignFrames:__smoke.foreignFrames,gl:__smoke.gl,pixels:__smoke.pixels})', returnByValue: true },
+        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,contextAttrs:__smoke.contextAttrs,foreignFrames:__smoke.foreignFrames,gl:__smoke.gl,pixels:__smoke.pixels})', returnByValue: true },
         sessionId,
         2000,
       );
@@ -582,6 +641,58 @@ async function main() {
         break;
       }
     }
+  }
+
+  // What the browser actually shows, clipped to the canvas.
+  //
+  // This is the verdict's evidence now, and the drawImage sampling in the page has been
+  // demoted to a second opinion. Round 25 is why: the compositor returned a 46 KB PNG of
+  // a region the in-page sampler was reading as empty, and a 480x272 blank rectangle does
+  // not compress to 46 KB. The context is created with alpha and premultipliedAlpha, so a
+  // drawing buffer the emulator leaves at zero alpha composites to nothing when *we* draw
+  // it into a scratch canvas — while the browser puts it on screen perfectly well. The
+  // sampler was measuring its own compositing, not the port.
+  //
+  // A screenshot has no such problem: it is opaque pixels of what a person would see.
+  // Clipped to the canvas so the page's own background cannot be mistaken for content.
+  let shot = null;
+  try {
+    const { result: rectResult } = await browser.send(
+      'Runtime.evaluate',
+      { expression: 'JSON.stringify((({x,y,width,height}) => ({x,y,width,height}))(document.getElementById("canvas").getBoundingClientRect()))', returnByValue: true },
+      sessionId,
+      5000,
+    );
+    const rect = JSON.parse(rectResult.value);
+    const png = await browser.send(
+      'Page.captureScreenshot',
+      { format: 'png', clip: { ...rect, scale: 1 }, captureBeyondViewport: true },
+      sessionId,
+      15000,
+    );
+    // Graded in the page, because Node has no PNG decoder and the browser is right there.
+    // A PNG is opaque, so this counts the colours a viewer would actually see.
+    const grade = await browser.send(
+      'Runtime.evaluate',
+      {
+        expression:
+          '(async () => { const i = new Image(); i.src = "data:image/png;base64," + ' +
+          JSON.stringify(png.data) +
+          '; await i.decode(); const c = document.createElement("canvas"); c.width = 120; c.height = 68;' +
+          ' const x = c.getContext("2d", { willReadFrequently: true }); x.drawImage(i, 0, 0, c.width, c.height);' +
+          ' const d = x.getImageData(0, 0, c.width, c.height).data; const s = new Set();' +
+          ' for (let n = 0; n < d.length; n += 4) s.add((d[n] << 16) | (d[n + 1] << 8) | d[n + 2]);' +
+          ' return JSON.stringify({ colours: s.size }); })()',
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      sessionId,
+      15000,
+    );
+    shot = { bytes: Math.round((png.data?.length ?? 0) * 3 / 4), ...JSON.parse(grade.result.value) };
+    shotNote = ` screenshot=${shot.bytes}B/${shot.colours}col`;
+  } catch (e) {
+    // A page that cannot answer has already been reported as BLOCKED; nothing to add.
   }
 
   // ---- the verdict ----
@@ -612,6 +723,26 @@ async function main() {
     code = 1;
   } else if (probe.loopTurns === 0) {
     verdict = 'ALIVE BUT STALLED — callMain returned and the main thread answers, but the browser never handed it back to the page.';
+    code = 1;
+  } else if (shot && shot.colours > 1) {
+    verdict =
+      `DRAWING — the canvas shows ${shot.colours} distinct colours in a screenshot of what the browser is actually displaying ` +
+      `(${shot.bytes} bytes of PNG), over ${probe.loopTurns} event-loop turns and ${probe.heartbeat} heartbeats.` +
+      glNote(probe) +
+      (probe.pixels && probe.pixels.best <= 1
+        ? ' The in-page sampler disagrees and reads the canvas as empty; that is its compositing, not the port — see the note in the harness.'
+        : '');
+    code = 0;
+  } else if (shot && shot.colours === 1) {
+    // A screenshot cannot tell a canvas cleared to one colour from one never painted at
+    // all — an unpainted canvas shows the page behind it, which is also one colour. The
+    // GL counters can, and the distinction is worth keeping: one is a renderer that runs
+    // and draws nothing, the other never got as far as a surface.
+    const cleared = (probe.gl?.clearsToCanvas ?? 0) > 0;
+    verdict = cleared
+      ? `CLEARED, NOT DRAWN — the canvas is a single flat colour in a screenshot of what the browser is actually displaying, and something cleared it ${probe.gl.clearsToCanvas} times. A renderer owns it and draws nothing on top.`
+      : `BLANK — the canvas is a single flat colour in a screenshot of what the browser is actually displaying, and nothing ever cleared it either, over ${probe.loopTurns} event-loop turns.`;
+    verdict += glNote(probe);
     code = 1;
   } else if (!probe.pixels || probe.pixels.samples === 0) {
     // Exit 2, not 1. The other verdicts are findings about the port; this one is a

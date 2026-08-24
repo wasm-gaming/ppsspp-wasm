@@ -1,0 +1,82 @@
+Subject: [PATCH 12/12] Fix: a zero refresh rate sleeps the emu thread for 35 minutes
+
+NativeFrame ends with a fallback throttle for the menu:
+
+    float refreshRate = System_GetPropertyFloat(SYSPROP_DISPLAY_REFRESH_RATE);
+    static double lastTime = 0.0;
+    if (lastTime > 0.0) {
+        int sleepTimeUs = (int)(1000000 * ((1.0 / refreshRate) - diffTime));
+        if (sleepTimeUs > 0)
+            sleep_us(sleepTimeUs, "fallback-throttle");
+    }
+    lastTime = time_now_d();
+
+On SDL, refreshRate is g_RefreshRate, taken verbatim from
+displayMode->refresh_rate. SDL documents that as 0 when it cannot determine one,
+and 0 is what the Emscripten video driver reports — a browser cannot be asked
+what the monitor is doing.
+
+So 1.0 / refreshRate is +inf, and (int)(1000000 * inf) saturates to INT_MAX
+under wasm's non-trapping float-to-int. That is 2147483647 microseconds: a
+35-minute sleep on the emu thread, inside a frame it never returns from.
+
+`static double lastTime = 0.0` is why this presents as *exactly two frames*. The
+first frame takes the lastTime > 0.0 branch as false and only records the time;
+the second computes the sleep and never comes back. Measured, not inferred: with
+the traces from patches 0010 and 0011 on, a run shows two complete NativeFrame
+passes and two complete render handshakes — both frames submitted, presented and
+fenced — and then no third frame, with the emu thread alive and silent for the
+rest of the run.
+
+Two hunks, because the bug has a source and a blast radius and both are worth
+closing:
+
+- SDLMain keeps its own 60 Hz default when SDL reports no rate, rather than
+  overwriting it with zero. This is where the wrong value enters.
+- NativeApp defends the division. Any platform that reports 0 — or NaN, which
+  the !(x > 0) form also catches — can otherwise stop the emu thread dead, and a
+  35-minute sleep is too spectacular a failure to leave one caller away.
+
+Neither hunk is WebAssembly-specific. This is an upstream bug that needed a
+platform with no queryable refresh rate to show itself.
+
+diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
+index 1bb399fd9..a15c732fd 100644
+--- a/SDL/SDLMain.cpp
++++ b/SDL/SDLMain.cpp
+@@ -1833,7 +1833,16 @@ int main(int argc, char *argv[]) {
+ 	}
+ 	g_DesktopWidth = displayMode->w;
+ 	g_DesktopHeight = displayMode->h;
+-	g_RefreshRate = displayMode->refresh_rate;
++	// SDL documents refresh_rate as 0 when it cannot determine one, and that is the
++	// normal answer from the Emscripten video driver: a browser cannot be asked what the
++	// monitor is doing. Keeping the 60 Hz default above is the right answer; overwriting
++	// it with zero is catastrophic two files away, because NativeFrame's fallback
++	// throttle divides by it.
++	if (displayMode->refresh_rate > 0.0f) {
++		g_RefreshRate = displayMode->refresh_rate;
++	} else {
++		WARN_LOG(Log::System, "Display reports no refresh rate; keeping %0.1f Hz", g_RefreshRate);
++	}
+ 	SDL_free(displayIDs);
+ 
+ 	// TODO: Should only call this if we actually intend to use OpenGL.
+diff --git a/UI/NativeApp.cpp b/UI/NativeApp.cpp
+index a449f8e35..276caeb43 100644
+--- a/UI/NativeApp.cpp
++++ b/UI/NativeApp.cpp
+@@ -1367,6 +1367,13 @@ void NativeFrame(GraphicsContext *graphicsContext) {
+ 		g_BackgroundAudio.Play();
+ 
+ 		float refreshRate = System_GetPropertyFloat(SYSPROP_DISPLAY_REFRESH_RATE);
++		// A platform that cannot report a refresh rate must not be able to stop the emu
++		// thread dead. Without this, 1.0 / 0 is inf, and the (int) cast below saturates
++		// to INT_MAX microseconds — a 35-minute sleep that the frame never returns from.
++		// Written as !(x > 0) so a NaN is caught too.
++		if (!(refreshRate > 0.0f)) {
++			refreshRate = 60.0f;
++		}
+ 		static double lastTime = 0.0;
+ 		if (lastTime > 0.0) {
+ 			double now = time_now_d();

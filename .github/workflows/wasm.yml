@@ -18,6 +18,10 @@ on:
         description: "Link with the instruments (ASSERTIONS, PTHREADS_DEBUG, names in stack traces)"
         type: boolean
         default: false
+      trace:
+        description: "Trace both halves of a frame: the emu/render handshake and the update calls, PPSSPP at verbose"
+        type: boolean
+        default: false
       smoke:
         description: "Boot the result in a real browser and report whether the tab survived"
         type: boolean
@@ -119,6 +123,10 @@ jobs:
           # Link-only flags, so turning the instruments on costs a relink and not a
           # rebuild of 1118 targets. See WASM_DEBUG_FLAGS in the Makefile.
           DEBUG: ${{ inputs.debug && '1' || '' }}
+          # A compile define rather than a link flag, so it costs one object — patch
+          # 0010 scopes it to the file with the VLOGs in it.
+          GLTRACE: ${{ inputs.trace && '1' || '' }}
+          FRAMETRACE: ${{ inputs.trace && '1' || '' }}
 
       # Runs even when the build succeeded: a successful build has no FAILED lines and
       # this says so in one line, which is a cheaper thing to read than a green tick.
@@ -235,4 +243,6 @@ jobs:
       - name: Boot it
         env:
           CHROMIUM_PATH: /usr/bin/google-chrome
-        run: make smoke SMOKE_TIMEOUT=120
+        # Verbose when the trace is on: the handshake lines are INFO on Log::G3D, and
+        # there is no point compiling them in and then filtering them out.
+        run: make smoke SMOKE_TIMEOUT=120 SMOKE_LOGLEVEL=${{ inputs.trace && '6' || '4' }}
