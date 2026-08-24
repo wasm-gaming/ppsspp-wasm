@@ -140,14 +140,45 @@ gives that its own verdict rather than hanging:
 BLOCKED — the main thread stopped answering at stage "callMain".
 ```
 
-A tab that stops answering is not missing evidence here; it *is* the measurement. The
-runner's own two states were checked against fakes that pass and deliberately block
-before it was pointed at the emulator, because an instrument that cannot fail is not an
-instrument.
+A tab that stops answering is not missing evidence here; it *is* the measurement.
 
-In CI it is a separate job: the emsdk container has no browser, and moving a 40 MB
-artifact to a runner that already has Chrome costs less than installing one per round.
-It reports into the run summary beside the compile result.
+**And a live tab is not a picture.** The heartbeat cannot tell a working emulator from
+one that comes up, registers a main loop and paints nothing at all — both produce the
+same counts. So the run also reads the canvas back, four times a second, and grades what
+it finds:
+
+| Verdict | What the canvas looked like | Exit |
+| --- | --- | --- |
+| `DRAWING` | More than one colour, in at least two samples. | 0 |
+| `CLEARED, NOT DRAWN` | One flat colour, every sample. | 1 |
+| `BLANK` | Nothing ever presented — no opaque pixel at all. | 1 |
+| `NO PICTURE READ` | The sampler itself failed. A finding about the runner, so exit **2**. | 2 |
+
+`CLEARED, NOT DRAWN` is the one worth understanding. Every renderer clears its target,
+so a port that draws nothing does not leave an *empty* canvas — it leaves a perfectly
+uniform one. A check that asked "is there anything there?" would pass it. Counting
+colours is what makes the difference between "it runs" and "it works".
+
+Reading a WebGL canvas from outside needs `preserveDrawingBuffer`, which Emscripten
+never asks for, so the harness forces it by wrapping `getContext` before the module
+loads. That is an observer effect and is named as one in the source: it removes the
+implicit clear between frames. PPSSPP clears its own target every frame, so it should
+not change what is drawn — and a `DRAWING` verdict that only appeared with the flag on
+would be the thing to distrust. The sample is taken with `drawImage`, not
+`gl.readPixels`, because patch 0009 means a frame can be sitting half-finished between
+animation frames and the instrument has no business touching those bindings.
+
+**`make smoke-selftest` points the runner at things that fail on purpose.** Five fakes
+in `tests/fakes/` — one that draws, one that only clears, one that never asks for a
+context, one that holds the main thread, one whose factory never settles — each landing
+on exactly one verdict. A runner that reports success whatever it is shown is worse than
+no runner, because a round then ends in a green tick that means nothing.
+
+In CI both run as one separate job: the emsdk container has no browser, and moving a
+40 MB artifact to a runner that already has Chrome costs less than installing one per
+round. The selftest runs first, so a verdict about the emulator is only trusted after
+the thing issuing verdicts has been checked. It reports into the run summary beside the
+compile result.
 
 ### The instruments
 

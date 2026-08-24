@@ -205,6 +205,11 @@ jobs:
   # This is the half of a round that a compile log cannot report. The port currently
   # links, starts, initialises SDL3 and then stops, and none of that is visible from
   # `ninja` coming back green.
+  #
+  # The job's verdict is now about pixels, not just about the tab surviving: a build
+  # that comes up, registers its main loop and paints nothing fails here. That costs the
+  # full timeout to establish, which is the right price for the one answer this job
+  # exists to give.
   smoke:
     needs: wasm
     if: ${{ inputs.smoke }}
@@ -218,6 +223,14 @@ jobs:
         with:
           name: ppsspp-wasm
           path: src/native
+
+      # Before trusting a verdict about the emulator, check the thing that issues
+      # verdicts. This needs a browser and no emulator, so it costs a minute and it is
+      # the difference between a green tick that means something and one that does not.
+      - name: Check the instrument
+        env:
+          CHROMIUM_PATH: /usr/bin/google-chrome
+        run: make smoke-selftest
 
       - name: Boot it
         env:
