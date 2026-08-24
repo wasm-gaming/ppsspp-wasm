@@ -98,7 +98,11 @@ const HARNESS = `<!doctype html>
     loopTurns: 0,
     contexts: 0,
     foreignFrames: 0,
-    gl: { draws: 0, drawsToCanvas: 0, clears: 0, clearsToCanvas: 0, binds: 0, onCanvas: true },
+    gl: {
+      draws: 0, drawsToCanvas: 0, clears: 0, clearsToCanvas: 0,
+      binds: 0, bindsNull: 0, bindTargets: {}, firstBinds: [],
+      onCanvas: true,
+    },
     pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, hash: null, error: null },
     stdout: [],
     stderr: [],
@@ -177,6 +181,19 @@ const HARNESS = `<!doctype html>
     const realBind = ctx.bindFramebuffer;
     ctx.bindFramebuffer = function (target, fb) {
       g.binds++;
+      // Named rather than merely counted. "No draw reached the canvas" is a claim about
+      // a bind that never happened, and a claim about a call nobody saw is worth less
+      // than the call itself. PPSSPP's fbo_unbind() binds GL_FRAMEBUFFER with a zero
+      // name, which Emscripten forwards as null — so if the backbuffer is ever made the
+      // render target, it appears here as FRAMEBUFFER:null and nowhere else.
+      const name = target === this.FRAMEBUFFER ? 'FRAMEBUFFER'
+        : target === this.DRAW_FRAMEBUFFER ? 'DRAW_FRAMEBUFFER'
+        : target === this.READ_FRAMEBUFFER ? 'READ_FRAMEBUFFER'
+        : String(target);
+      const key = name + (fb === null ? ':null' : ':fbo');
+      g.bindTargets[key] = (g.bindTargets[key] || 0) + 1;
+      if (fb === null) g.bindsNull++;
+      if (g.firstBinds.length < 24) g.firstBinds.push(key);
       // FRAMEBUFFER and DRAW_FRAMEBUFFER decide where a draw lands. READ_FRAMEBUFFER
       // does not, so it must not move this flag.
       if (target === this.FRAMEBUFFER || target === this.DRAW_FRAMEBUFFER) g.onCanvas = fb === null;
@@ -465,7 +482,8 @@ const vitals = (p) =>
  */
 const glNote = (p) =>
   p.gl
-    ? ` GL: ${p.gl.draws} draw calls (${p.gl.drawsToCanvas} with the default framebuffer bound), ${p.gl.clears} clears (${p.gl.clearsToCanvas} to it), ${p.gl.binds} framebuffer binds. ` +
+    ? ` GL: ${p.gl.draws} draw calls (${p.gl.drawsToCanvas} with the default framebuffer bound), ${p.gl.clears} clears (${p.gl.clearsToCanvas} to it), ${p.gl.binds} framebuffer binds ` +
+      `— ${JSON.stringify(p.gl.bindTargets ?? {})}, first ${(p.gl.firstBinds ?? []).join(' ') || 'none'}. ` +
       `Something other than the harness asked for ${p.foreignFrames ?? 0} animation frames.`
     : '';
 
