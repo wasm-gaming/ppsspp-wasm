@@ -1,6 +1,6 @@
 {
   "name": "@wasm-gaming/ppsspp-wasm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "PPSSPP compiled to WebAssembly, wrapped in the wasm-gaming engine contract. The PSP emulator as one more engine a host can drive without knowing it is PPSSPP.",
   "type": "module",
   "types": "./dist/ppsspp-wasm.d.ts",
