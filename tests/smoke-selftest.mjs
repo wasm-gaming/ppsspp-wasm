@@ -41,8 +41,15 @@ const CASES = [
     dir: 'draws',
     code: 0,
     expect: /^DRAWING —/m,
-    alsoExpect: [/foreignFrames=[1-9]/, /best [2-9]\d* colours/],
-    why: 'a canvas with colour on it passes, its animation frames are seen, and the sampler reads it directly',
+    alsoExpect: [
+      /foreignFrames=[1-9]/,
+      /best [2-9]\d* colours/,
+      // The page tells SDL3 where to render through Module.ENV, exactly as
+      // src/loader.ts does. A build that stopped exporting ENV would throw here rather
+      // than in SDL, and this is what notices.
+      /canvas selector #ppsspp-smoke/,
+    ],
+    why: 'a canvas with colour on it passes, its frames are seen, the sampler reads it, and SDL3 is told where it is',
   },
   {
     dir: 'transparent',

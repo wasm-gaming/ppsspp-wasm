@@ -94,6 +94,17 @@ export interface PpssppModule {
   ): number;
   ccall(name: 'ppsspp_web_pause' | 'ppsspp_web_resume' | 'ppsspp_web_shutdown', returnType: null, argTypes: [], args: []): void;
 
+  /**
+   * Emscripten's copy of the process environment, and the only reason it is exported.
+   *
+   * SDL3's Emscripten video driver does not take the canvas from the module the way
+   * SDL2 did: it resolves a CSS selector from `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`,
+   * and `SDL_GetHint` reads the environment before anything else. So this is how
+   * {@link PpssppModuleInit.canvasSelector} reaches SDL — written by the loader after
+   * instantiation and before {@link callMain}, which is when the window is created.
+   */
+  readonly ENV: Record<string, string>;
+
   /** Emscripten's own worker pool, which `close()` has to wind down. */
   readonly PThread?: { terminateAllThreads?(): void };
 }
@@ -103,14 +114,25 @@ export interface PpssppModuleInit {
   /**
    * PPSSPP renders here.
    *
-   * **This is not yet enough for SDL3, and the gap is known.** SDL2's Emscripten
-   * backend took the element from the module; SDL3's resolves a *CSS selector* from
-   * `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`, defaulting to `#canvas`, and fails window
-   * creation outright when nothing matches. Since a restart builds a new canvas, they
-   * cannot all carry that id, so the selector has to become part of this seam. See
-   * `native/README.md`; until then the emulator gets no GL context.
+   * Emscripten's own runtime takes the element from this property. SDL3 does not —
+   * see {@link canvasSelector}, which is the half that actually gets PPSSPP a window.
    */
   canvas: HTMLCanvasElement;
+  /**
+   * How SDL3 finds {@link canvas}: a CSS selector, `#some-id`.
+   *
+   * SDL2's Emscripten backend took the element from the module. SDL3's resolves
+   * `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR` instead — defaulting to `#canvas` — and
+   * fails window creation outright when nothing matches, which is
+   * `SDLGLGraphicsContext::InitSurface: no window or GL context`. A session builds a
+   * *new* canvas every time it starts, so they cannot all be called `canvas`, and the
+   * selector has to cross this seam per instance rather than being a constant.
+   *
+   * The loader writes it into {@link PpssppModule.ENV} before `callMain`, because
+   * `SDL_GetHint` reads the environment first. It must match exactly one element, and
+   * that element must be {@link canvas}.
+   */
+  canvasSelector: string;
   /** Worker pool size. Comes from `config.threads`, resolved against the machine. */
   pthreadPoolSize: number;
   /** Where the `.wasm` and `.data` sit, when they are not next to the JS glue. */

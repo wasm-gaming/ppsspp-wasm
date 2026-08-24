@@ -1,0 +1,541 @@
+Subject: [PATCH 14/14] web: the bridge a browser host drives PPSSPP through
+
+The whole of the C++ this port adds, and it is small because everything it
+needs already exists. The seam it implements is specified in JavaScript rather
+than here: ../../src/module.ts declares the four entry points and the shape of
+every event, and the SDK is written against that declaration alone.
+
+    int  ppsspp_web_apply_setting(const char *key, const char *value);
+    void ppsspp_web_pause(void);
+    void ppsspp_web_resume(void);
+    void ppsspp_web_shutdown(void);
+
+**Settings.** `Section/Key` in PPSSPP's own ini vocabulary, and the value as a
+string. Core/Config.cpp already holds the table this needs — g_sectionMeta maps
+a section name to its ConfigSetting array — and ConfigSetting::ReadFromIniSection
+already knows how to turn a string into whichever type a setting is. So
+SetConfigValueFromString is a lookup plus a one-entry ini section to read the
+value out of, rather than a second copy of the type switch. Keys under `Web/`
+are this package's own and have no ini entry: `Web/FastForward` sets
+PSP_CoreParameter().fastForward, which is what the throttle actually reads, and
+is the same thing the WebSocket debugger's GameSubscriber does.
+
+**Pause.** Core_Break(BreakReason::UIPause) and Core_Resume, which is how PPSSPP
+itself implements a pause with no menu — see VIRTKEY_PAUSE_NO_MENU in
+UI/EmuScreen.cpp. Emulation stops, the last frame stays on the canvas, and no
+screen is pushed, so the host's own pause UI is the only one a player sees.
+
+**Events go one way and from one place.** PpssppWeb::Frame() is called from
+SDLMain's Emscripten main loop, which means the browser's main thread — the only
+thread where a call into JS is legal and where the page's callback can run. What
+can be observed is polled there (a boot completing, the frame rate, PPSSPP's own
+pause menu, the frontend returning to its game list); what happens on another
+thread is queued and drained there. That is why there is no
+MAIN_THREAD_ASYNC_EM_ASM anywhere in this patch: nothing emits from a thread
+that would need it.
+
+Two producers are not observable and are hooked instead, both under
+__EMSCRIPTEN__ and both three lines: a failed boot in Core/System.cpp, at the
+one point where the error string still exists before the caller consumes it and
+the boot state goes back to Off; and Core/SaveState.cpp, where SaveSlot and
+LoadSlot wrap the caller's callback so a host hears about save states however
+they were triggered, including from PPSSPP's own menu.
+
+`booted` is the one with a hard requirement, because it is what resolves the
+promise start() returned: it means a game is up, not that main() ran. The test
+is the boot having completed *and* the frontend having switched to it, which is
+the point at which the next frame drawn is the game's.
+
+Every event is built as an object in JS from arguments that cross as numbers and
+pointers, so nothing here has to escape a game title into JSON.
+
+`pause` and `resume` are emitted for PPSSPP's *own* pause menu and nothing else.
+The ones this package triggers through ppsspp_web_pause are emitted on the JS
+side, and emitting them here as well would have a host see every one twice.
+
+**ENV**, alongside the four functions in -sEXPORTED_RUNTIME_METHODS, is for the
+other half of the seam: SDL3's Emscripten video driver resolves
+SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR through SDL_GetHint, which reads the
+environment first, and this package builds a new canvas per session so they
+cannot all be called `#canvas`. No C is needed for it — the SDK writes the
+selector into ENV before callMain.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5cdf418a5..12b133a56 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -362,7 +362,17 @@ if(EMSCRIPTEN)
+ 	#   INVOKE_RUN=0 — main() waits for callMain(), because the memory stick has to be
+ 	#     mounted and the game staged before PPSSPP goes looking for either.
+ 	add_link_options("-sMODULARIZE=1" "-sEXPORT_ES6=1" "-sINVOKE_RUN=0")
+-	add_link_options("-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,IDBFS,WORKERFS,PThread")
++	# Exactly the members ../src/module.ts declares, and no more. ENV is the newest of
++	# them and is there for one reason: SDL3's Emscripten video driver finds its canvas
++	# by resolving SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR, which SDL_GetHint reads from the
++	# environment — and this package builds a new canvas per session, so they cannot all
++	# be called `#canvas`. The SDK writes the selector into ENV before callMain.
++	add_link_options("-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,IDBFS,WORKERFS,PThread,ENV")
++	# The bridge, in Core/WebBridge.cpp. EMSCRIPTEN_KEEPALIVE already stops these being
++	# stripped; naming them here is what makes the link fail loudly if one is ever
++	# renamed or dropped, rather than the SDK failing at the first ccall. `_main` has to
++	# be repeated because this list replaces the default rather than adding to it.
++	add_link_options("-sEXPORTED_FUNCTIONS=_main,_ppsspp_web_apply_setting,_ppsspp_web_pause,_ppsspp_web_resume,_ppsspp_web_shutdown")
+ 	# Only names Emscripten itself knows: this is an allowlist of the *runtime's* own
+ 	# incoming properties, and emcc warns about anything else. It is not a filter on the
+ 	# object a host passes in — MODULARIZE does `var Module = moduleArg`, so
+diff --git a/Core/CMakeLists.txt b/Core/CMakeLists.txt
+index c543a496c..aa1b48d0d 100644
+--- a/Core/CMakeLists.txt
++++ b/Core/CMakeLists.txt
+@@ -787,6 +787,16 @@ elseif(BUILD_BUNDLED_FFMPEG)
+ 	)
+ endif()
+ 
++# The browser bridge: the four ppsspp_web_* entry points a host calls and the one event
++# callback they answer through. Emscripten only, and it is the whole of the C++ this port
++# adds — the seam it implements is specified in ../src/module.ts.
++if(EMSCRIPTEN)
++	target_sources(Core PRIVATE
++		WebBridge.cpp
++		WebBridge.h
++	)
++endif()
++
+ # Discord integration
+ if(USE_DISCORD AND NOT IOS AND NOT LIBRETRO)
+ 	target_link_libraries(Core discord-rpc)
+diff --git a/Core/Config.cpp b/Core/Config.cpp
+index c7000c41a..bb338e5bf 100644
+--- a/Core/Config.cpp
++++ b/Core/Config.cpp
+@@ -1176,6 +1176,29 @@ ConfigBlock *GetConfigBlockForSection(std::string_view sectionName) {
+ 
+ const size_t numSections = ARRAY_SIZE(g_sectionMeta);
+ 
++bool SetConfigValueFromString(std::string_view sectionName, std::string_view key, std::string_view value) {
++	for (const ConfigSectionMeta &meta : g_sectionMeta) {
++		if (!equals(meta.section, sectionName)) {
++			continue;
++		}
++		for (size_t j = 0; j < meta.settingsCount; j++) {
++			const ConfigSetting &setting = meta.settings[j];
++			if (!equals(setting.IniKey(), key)) {
++				continue;
++			}
++			// Everything needed to turn a string into whichever type this setting is
++			// already exists — it is how the ini is read — and it takes a Section. So
++			// the value is handed over in one, rather than by teaching this file the
++			// type switch a second time.
++			IniFile ini;
++			Section *section = ini.GetOrCreateSection(sectionName);
++			section->Set(key, value);
++			return setting.ReadFromIniSection(meta.configBlock, section, false);
++		}
++	}
++	return false;
++}
++
+ std::map<const void *, std::pair<const ConfigBlock *, const ConfigSetting *>> &Config::getPtrLUT() {
+ 	static std::map<const void *, std::pair<const ConfigBlock *, const ConfigSetting *>> lut;
+ 	return lut;
+diff --git a/Core/Config.h b/Core/Config.h
+index d0f18f641..d36eed445 100644
+--- a/Core/Config.h
++++ b/Core/Config.h
+@@ -813,6 +813,11 @@ struct Config : public ConfigBlock {
+ std::string CreateRandMAC();
+ std::string DefaultProAdhocServer();
+ 
++// Apply one "Section", "Key" = value to the running configuration, the value being a
++// string in the same vocabulary ppsspp.ini uses. Returns false for a section or a key
++// this build does not have, so a caller can say so rather than silently accepting it.
++bool SetConfigValueFromString(std::string_view sectionName, std::string_view key, std::string_view value);
++
+ // TODO: Find a better place for this.
+ extern http::RequestManager g_DownloadManager;
+ extern Config g_Config;
+diff --git a/Core/SaveState.cpp b/Core/SaveState.cpp
+index db983922c..abf4f0643 100644
+--- a/Core/SaveState.cpp
++++ b/Core/SaveState.cpp
+@@ -35,6 +35,7 @@
+ #include "Common/TimeUtil.h"
+ 
+ #include "Core/SaveState.h"
++#include "Core/WebBridge.h"
+ #include "Core/Config.h"
+ #include "Core/Core.h"
+ #include "Core/CoreTiming.h"
+@@ -402,6 +403,19 @@ int g_screenshotFailures;
+ 		if (!NetworkAllowSaveState()) {
+ 			return;
+ 		}
++#ifdef __EMSCRIPTEN__
++		// A browser host is told about save states however they were triggered — from
++		// its own request or from PPSSPP's own menu — so the notification wraps the
++		// caller's callback rather than being added at each call site.
++		callback = [slot, callback](Status status, std::string_view message, std::string_view metadata) {
++			if (status != Status::FAILURE) {
++				PpssppWeb::NotifySaveState(slot, false);
++			}
++			if (callback) {
++				callback(status, message, metadata);
++			}
++		};
++#endif
+ 
+ 		Path fn = GenerateSaveSlotPath(gamePrefix, slot, STATE_EXTENSION);
+ 		if (!fn.empty()) {
+@@ -469,6 +483,16 @@ int g_screenshotFailures;
+ 		if (!NetworkAllowSaveState()) {
+ 			return;
+ 		}
++#ifdef __EMSCRIPTEN__
++		callback = [slot, callback](Status status, std::string_view message, std::string_view metadata) {
++			if (status != Status::FAILURE) {
++				PpssppWeb::NotifySaveState(slot, true);
++			}
++			if (callback) {
++				callback(status, message, metadata);
++			}
++		};
++#endif
+ 
+ 		Path fn = GenerateSaveSlotPath(gamePrefix, slot, STATE_EXTENSION);
+ 		Path fnUndo = GenerateSaveSlotPath(gamePrefix, slot, UNDO_STATE_EXTENSION);
+diff --git a/Core/System.cpp b/Core/System.cpp
+index b1b4064be..a2754ec15 100644
+--- a/Core/System.cpp
++++ b/Core/System.cpp
+@@ -53,6 +53,7 @@
+ #include "Core/Debugger/LineInfo.h"
+ #include "Core/Debugger/SymbolMap.h"
+ #include "Core/System.h"
++#include "Core/WebBridge.h"
+ #include "Core/HLE/HLE.h"
+ #include "Core/HLE/Plugins.h"
+ #include "Core/HLE/ReplaceTables.h"
+@@ -779,6 +780,12 @@ BootState PSP_InitUpdate(std::string *error_string) {
+ 		// Failed! (Note: PSP_Shutdown was already called on the loader thread).
+ 		Core_NotifyLifecycle(CoreLifecycle::START_COMPLETE);
+ 		*error_string = g_CoreParameter.errorString;
++#ifdef __EMSCRIPTEN__
++		// The error string is consumed by the caller and the boot state goes back to
++		// Off, so a browser host polling for trouble would find neither. This is the
++		// one place both still exist.
++		PpssppWeb::NotifyError(g_CoreParameter.errorString);
++#endif
+ 		g_bootState = BootState::Off;
+ 		return BootState::Failed;
+ 	}
+diff --git a/Core/WebBridge.cpp b/Core/WebBridge.cpp
+new file mode 100644
+index 000000000..3886c5929
+--- /dev/null
++++ b/Core/WebBridge.cpp
+@@ -0,0 +1,239 @@
++// See WebBridge.h. The contract this implements lives in ../../src/module.ts.
++
++#ifdef __EMSCRIPTEN__
++
++#include <emscripten.h>
++
++#include <mutex>
++#include <vector>
++
++#include "Common/Log.h"
++#include "Common/StringUtils.h"
++#include "Common/System/System.h"
++#include "Common/TimeUtil.h"
++#include "Core/Config.h"
++#include "Core/Core.h"
++#include "Core/CoreParameter.h"
++#include "Core/ELF/ParamSFO.h"
++#include "Core/HW/Display.h"
++#include "Core/System.h"
++#include "Core/WebBridge.h"
++
++namespace PpssppWeb {
++
++// Events are emitted from one place and one thread — see Frame() — so anything that
++// happens elsewhere lands here first. A queue rather than a direct call because the
++// producers are not on the browser's main thread: a boot fails on PPSSPP's loading
++// thread, a save state finishes on whichever thread ran it, and calling into JS from
++// either is either illegal or asynchronous.
++struct Pending {
++	enum class Kind { Error, SaveState } kind;
++	std::string message;
++	int slot = 0;
++	bool saved = false;
++};
++
++static std::mutex g_pendingLock;
++static std::vector<Pending> g_pending;
++
++// What has already been said, so that a poll does not say it twice.
++static bool g_bootedEmitted = false;
++static bool g_exitEmitted = false;
++static bool g_wasIngame = false;
++static bool g_wasPauseMenu = false;
++static bool g_quitRequested = false;
++static double g_lastFpsAt = 0.0;
++
++// One place where C++ speaks to the host, and it is deliberately not a JSON string:
++// every event is built as an object in JS from arguments that cross as numbers and
++// pointers, so nothing here has to escape a game title.
++static void EmitBooted(const char *gameId, const char *title, const char *region) {
++	EM_ASM({
++		const emit = Module['ppssppEvent'];
++		if (emit) emit({ type: 'booted', gameId: UTF8ToString($0), title: UTF8ToString($1), region: UTF8ToString($2) });
++	}, gameId, title, region);
++}
++
++static void EmitError(const char *message) {
++	EM_ASM({
++		const emit = Module['ppssppEvent'];
++		if (emit) emit({ type: 'error', message: UTF8ToString($0) });
++	}, message);
++}
++
++static void EmitExit() {
++	EM_ASM({
++		const emit = Module['ppssppEvent'];
++		if (emit) emit({ type: 'exit' });
++	});
++}
++
++static void EmitFps(double fps, double vps) {
++	EM_ASM({
++		const emit = Module['ppssppEvent'];
++		if (emit) emit({ type: 'fps', fps: $0, vps: $1 });
++	}, fps, vps);
++}
++
++static void EmitSaveState(int slot, bool saved) {
++	EM_ASM({
++		const emit = Module['ppssppEvent'];
++		if (emit) emit({ type: 'saveState', slot: $0, action: $1 ? 'saved' : 'loaded' });
++	}, slot, saved ? 1 : 0);
++}
++
++static void EmitPause(bool paused) {
++	EM_ASM({
++		const emit = Module['ppssppEvent'];
++		if (emit) emit({ type: $0 ? 'pause' : 'resume' });
++	}, paused ? 1 : 0);
++}
++
++void NotifyError(std::string_view message) {
++	std::lock_guard<std::mutex> guard(g_pendingLock);
++	g_pending.push_back(Pending{ Pending::Kind::Error, std::string(message), 0, false });
++}
++
++void NotifySaveState(int slot, bool saved) {
++	std::lock_guard<std::mutex> guard(g_pendingLock);
++	g_pending.push_back(Pending{ Pending::Kind::SaveState, std::string(), slot, saved });
++}
++
++bool Frame() {
++	if (g_quitRequested) {
++		// One frame of grace has already passed since ppsspp_web_shutdown(), which is
++		// what gives REQUEST_GAME_STOP a turn of the loop to be seen. Stopping here is
++		// what makes SDLMain cancel the browser main loop and join the emu thread.
++		return false;
++	}
++
++	{
++		std::vector<Pending> drained;
++		{
++			std::lock_guard<std::mutex> guard(g_pendingLock);
++			drained.swap(g_pending);
++		}
++		for (const Pending &event : drained) {
++			switch (event.kind) {
++			case Pending::Kind::Error: EmitError(event.message.c_str()); break;
++			case Pending::Kind::SaveState: EmitSaveState(event.slot, event.saved); break;
++			}
++		}
++	}
++
++	const GlobalUIState uiState = GetUIState();
++	const bool ingame = uiState == UISTATE_INGAME || uiState == UISTATE_PAUSEMENU;
++
++	// `booted` is what resolves the promise start() returned, so it means "a game is
++	// up", not "main() ran". PSP_IsInited() is the boot having completed; the UI state
++	// is the frontend having actually switched to it, which is the point at which the
++	// next frame drawn is the game's.
++	if (!g_bootedEmitted && ingame && PSP_IsInited()) {
++		const std::string gameId = g_paramSFO.GetDiscID();
++		const std::string title = g_paramSFO.GetValueString("TITLE");
++		const std::string region = std::string(GameRegionToString(DetectGameRegionFromID(gameId)));
++		EmitBooted(gameId.c_str(), title.c_str(), region.c_str());
++		g_bootedEmitted = true;
++		g_lastFpsAt = time_now_d();
++	}
++
++	// PPSSPP's *own* pause menu, and only that. The pause this package triggers through
++	// ppsspp_web_pause is reported by the SDK on the JS side — emitting it here as well
++	// would have a host see every host-initiated pause twice.
++	const bool pauseMenu = uiState == UISTATE_PAUSEMENU;
++	if (pauseMenu != g_wasPauseMenu) {
++		g_wasPauseMenu = pauseMenu;
++		EmitPause(pauseMenu);
++	}
++
++	if (g_bootedEmitted && !g_exitEmitted) {
++		const double now = time_now_d();
++		if (now - g_lastFpsAt >= 1.0) {
++			g_lastFpsAt = now;
++			float vps = 0.0f, fps = 0.0f;
++			__DisplayGetAveragedFPS(&vps, &fps);
++			EmitFps(fps, vps);
++		}
++	}
++
++	// The user quit from PPSSPP's own UI: the frontend is back at its game list, which
++	// for a session this package started means the game it was started for is over.
++	if (g_wasIngame && !ingame && !g_exitEmitted) {
++		g_exitEmitted = true;
++		EmitExit();
++	}
++	g_wasIngame = ingame;
++
++	return true;
++}
++
++}  // namespace PpssppWeb
++
++extern "C" {
++
++// `Section/Key`, in PPSSPP's own ini vocabulary — "Graphics/InternalResolution" — plus
++// the value as a string. ../../src/settings.ts is the complete list of what can arrive,
++// and only what ../../src/spec.ts advertises as `live: true` is ever sent.
++//
++// Returns 1 when the setting was applied and 0 for a key this build does not know,
++// which the SDK reports rather than swallowing.
++EMSCRIPTEN_KEEPALIVE int ppsspp_web_apply_setting(const char *key, const char *value) {
++	if (!key || !value) {
++		return 0;
++	}
++	const std::string_view full(key);
++	const size_t slash = full.find('/');
++	if (slash == std::string_view::npos) {
++		WARN_LOG(Log::System, "web: setting '%s' is not Section/Key", key);
++		return 0;
++	}
++	const std::string_view section = full.substr(0, slash);
++	const std::string_view name = full.substr(slash + 1);
++
++	// `Web/` is this package's own namespace: keys that PPSSPP has no ini entry for
++	// because they are runtime state rather than configuration.
++	if (section == "Web") {
++		if (name == "FastForward") {
++			const bool on = equalsNoCase(value, "true") || equalsNoCase(value, "1");
++			PSP_CoreParameter().fastForward = on;
++			return 1;
++		}
++		WARN_LOG(Log::System, "web: unknown Web/ setting '%s'", key);
++		return 0;
++	}
++
++	if (!SetConfigValueFromString(section, name, value)) {
++		WARN_LOG(Log::System, "web: no setting '%s'", key);
++		return 0;
++	}
++	return 1;
++}
++
++// Debug break and resume, which is how PPSSPP itself implements a pause with no menu —
++// see VIRTKEY_PAUSE_NO_MENU in UI/EmuScreen.cpp. The emulation stops and the last frame
++// stays on the canvas; no screen is pushed, so a host's own pause UI is the only one a
++// player sees.
++EMSCRIPTEN_KEEPALIVE void ppsspp_web_pause(void) {
++	if (PSP_IsInited() && !Core_IsStepping()) {
++		Core_Break(BreakReason::UIPause);
++	}
++}
++
++EMSCRIPTEN_KEEPALIVE void ppsspp_web_resume(void) {
++	if (PSP_IsInited() && Core_IsStepping()) {
++		Core_Resume();
++	}
++}
++
++// Stop, as cleanly as a browser tab allows. The game is asked to stop through the same
++// message PPSSPP's own UI posts, and the main loop is told to end on the next turn —
++// which is what joins the emu thread rather than leaving it running under a module the
++// host is about to drop.
++EMSCRIPTEN_KEEPALIVE void ppsspp_web_shutdown(void) {
++	System_PostUIMessage(UIMessage::REQUEST_GAME_STOP);
++	PpssppWeb::g_quitRequested = true;
++}
++
++}  // extern "C"
++
++#endif  // __EMSCRIPTEN__
+diff --git a/Core/WebBridge.h b/Core/WebBridge.h
+new file mode 100644
+index 000000000..3500f06dd
+--- /dev/null
++++ b/Core/WebBridge.h
+@@ -0,0 +1,34 @@
++// The whole of what a browser host can ask of PPSSPP, and what PPSSPP tells it back.
++//
++// The seam this implements is specified in JavaScript, not here: ../../src/module.ts
++// declares the four `ppsspp_web_*` entry points and the shape of every event, and the
++// SDK is written against that declaration alone. See ../../native/README.md.
++//
++// Emscripten only. Nothing in this file is compiled for any other platform, and the
++// CMake block that adds it is guarded the same way.
++
++#pragma once
++
++#ifdef __EMSCRIPTEN__
++
++#include <string>
++#include <string_view>
++
++namespace PpssppWeb {
++
++// One turn of the browser's event loop, called from SDLMain's Emscripten main loop and
++// therefore always on the page's main thread. This is where every event is emitted:
++// what other threads produce is queued and drained here, and what can only be observed
++// (a boot completing, a frame rate, PPSSPP's own pause menu) is polled here.
++//
++// Returns false once the host has called ppsspp_web_shutdown, which is how the main
++// loop learns to stop.
++bool Frame();
++
++// Any thread. Queued, and emitted from Frame() on the main thread.
++void NotifyError(std::string_view message);
++void NotifySaveState(int slot, bool saved);
++
++}  // namespace PpssppWeb
++
++#endif  // __EMSCRIPTEN__
+diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
+index 2ae7ccd6d..ae7a5665e 100644
+--- a/SDL/SDLMain.cpp
++++ b/SDL/SDLMain.cpp
+@@ -35,6 +35,7 @@ SDLJoystick *joystick = NULL;
+ #include "Common/System/NativeApp.h"
+ #include "Common/Audio/AudioBackend.h"
+ #include "Core/CmdLine.h"
++#include "Core/WebBridge.h"
+ #include "Core/EmuThread.h"
+ #include "ext/glslang/glslang/Public/ShaderLang.h"
+ #include "Common/Data/Format/PNGLoad.h"
+@@ -2280,7 +2281,12 @@ int main(int argc, char *argv[]) {
+ 		// Same body, one turn per animation frame. Nothing above this line changes.
+ 		static std::function<void()> webIteration;
+ 		webIteration = [&]() {
+-			if (!oneIteration()) {
++			// The bridge's own turn, and the only place it ever speaks to the host: it
++			// runs here because this is the browser's main thread, which is where a call
++			// into JS is legal and where the page's callback has to run. It returns
++			// false once ppsspp_web_shutdown() has been called, ending the loop by the
++			// same path a quit does.
++			if (!oneIteration() || !PpssppWeb::Frame()) {
+ 				emscripten_cancel_main_loop();
+ 				INFO_LOG(Log::System, "Requesting render thread exit...");
+ 				EmuThread_Join(graphicsContext, emuThread);

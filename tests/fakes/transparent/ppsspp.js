@@ -13,6 +13,10 @@
 // the alpha channel.
 export default async function createPpsspp(moduleArg = {}) {
   return Object.assign({}, moduleArg, {
+    // The real glue's process environment, which the runner writes SDL3's canvas
+    // selector into before callMain. A fake without one would make the harness throw
+    // where the emulator would not.
+    ENV: {},
     callMain() {
       const gl = moduleArg.canvas.getContext('webgl2');
       if (!gl) throw new Error('no webgl2 context');

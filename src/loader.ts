@@ -91,7 +91,7 @@ function requireIsolation(): void {
 export const loadPpsspp: PpssppLoader = async (init: PpssppModuleInit): Promise<PpssppModule> => {
   requireIsolation();
   const create = await glue();
-  return create({
+  const module = await create({
     canvas: init.canvas,
     // Read by the `-sPTHREAD_POOL_SIZE` expression the build links with, which is how
     // a link-time pool size is made to follow a runtime decision. See native/README.md.
@@ -118,4 +118,20 @@ export const loadPpsspp: PpssppLoader = async (init: PpssppModuleInit): Promise<
     ...(init.onAbort ? { onAbort: init.onAbort } : {}),
     ...(init.ppssppEvent ? { ppssppEvent: init.ppssppEvent } : {}),
   });
+
+  // The other half of "PPSSPP renders here", and the half SDL3 actually reads.
+  //
+  // Its Emscripten video driver resolves `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR` in
+  // `Emscripten_CreateWindow`, and `SDL_GetHint` looks at the environment before its
+  // own hint table — so writing it here, after instantiation and before `callMain`,
+  // is in time: the window is not created until `main()` runs. Nothing in C is
+  // involved, which is why `ENV` is exported at all.
+  //
+  // The alternative SDL offers is `SDL_PROP_WINDOW_CREATE_EMSCRIPTEN_CANVAS_ID_STRING`
+  // on `SDL_CreateWindowWithProperties`, which would be per window rather than per
+  // process — a better fit for what this package does, and a patch to PPSSPP's own
+  // window creation rather than a line here. This is the cheaper of the two and the
+  // one that needs nothing from upstream.
+  module.ENV.SDL_EMSCRIPTEN_CANVAS_SELECTOR = init.canvasSelector;
+  return module;
 };

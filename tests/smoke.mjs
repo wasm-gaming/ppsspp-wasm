@@ -84,13 +84,15 @@ const HARNESS = `<!doctype html>
 <title>ppsspp smoke</title>
 <style>html,body{margin:0;background:#111}canvas{display:block;width:480px;height:272px}</style>
 <!--
-  id="canvas" because SDL3's Emscripten video driver resolves a CSS selector from
-  SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR, defaulting to "#canvas", and fails window
-  creation outright when nothing matches. The SDK cannot use that id — it builds a new
-  canvas per restart — but that is a separate open question, and this harness tests one
-  thing at a time.
+  Deliberately *not* id="canvas", which is what SDL3's Emscripten video driver falls
+  back to when SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR is unset. The SDK cannot use that id
+  — it builds a new canvas per session, and they cannot all be called the same thing —
+  so it writes the selector into Module.ENV before callMain, and this page does the
+  same. Naming the element anything else is what makes that a real test: if the hint
+  never reaches SDL, window creation fails outright rather than quietly finding a
+  canvas the SDK would never have.
 -->
-<canvas id="canvas" width="480" height="272"></canvas>
+<canvas id="ppsspp-smoke" width="480" height="272"></canvas>
 <script type="module">
   const state = {
     stage: 'loading',
@@ -137,7 +139,8 @@ const HARNESS = `<!doctype html>
     return realRaf(cb);
   };
 
-  const canvas = document.getElementById('canvas');
+  const CANVAS_SELECTOR = '#ppsspp-smoke';
+  const canvas = document.querySelector(CANVAS_SELECTOR);
 
   // -- reading the picture back ---------------------------------------------
   //
@@ -334,6 +337,14 @@ const HARNESS = `<!doctype html>
 
     state.stage = 'instantiated';
     say({ kind: 'stage', text: 'instantiated' });
+
+    // How SDL3 is told where to render, and the same line src/loader.ts runs. SDL_GetHint
+    // reads the environment before its own hint table, and the window is not created
+    // until main() runs, so writing it here is in time. Reported rather than assumed:
+    // a build whose ENV is not exported would throw here instead of failing later
+    // inside SDL, where the message says nothing about a canvas.
+    mod.ENV.SDL_EMSCRIPTEN_CANVAS_SELECTOR = CANVAS_SELECTOR;
+    say({ kind: 'stage', text: 'canvas selector ' + CANVAS_SELECTOR });
 
     // Yield first, so the report above is delivered even if the call below never
     // returns. Without this the runner cannot tell "never instantiated" from
@@ -706,7 +717,7 @@ async function main() {
   try {
     const { result: rectResult } = await browser.send(
       'Runtime.evaluate',
-      { expression: 'JSON.stringify((({x,y,width,height}) => ({x,y,width,height}))(document.getElementById("canvas").getBoundingClientRect()))', returnByValue: true },
+      { expression: 'JSON.stringify((({x,y,width,height}) => ({x,y,width,height}))(document.querySelector("#ppsspp-smoke").getBoundingClientRect()))', returnByValue: true },
       sessionId,
       5000,
     );
