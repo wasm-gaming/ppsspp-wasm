@@ -104,7 +104,7 @@ const HARNESS = `<!doctype html>
       binds: 0, bindsDefault: 0, bindTargets: {}, firstBinds: [], bindKinds: {},
       onCanvas: true,
     },
-    pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, hash: null, error: null },
+    pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, backdrop: 0, hash: null, error: null },
     stdout: [],
     stderr: [],
     events: [],
@@ -249,6 +249,17 @@ const HARNESS = `<!doctype html>
   shot.height = SHOT_H;
   const shotCtx = shot.getContext('2d', { willReadFrequently: true });
 
+  // The same read a second time, onto an opaque backdrop, and it is the whole of the
+  // experiment that tells the two candidate explanations apart. A drawing buffer whose
+  // alpha the emulator never wrote composites to nothing above and to its own colour
+  // here, because the backdrop supplies the alpha it is missing; a canvas this sampler
+  // simply cannot read comes back flat both times. One is a finding about the port, the
+  // other about the instrument, and they are one drawImage apart.
+  const over = document.createElement('canvas');
+  over.width = SHOT_W;
+  over.height = SHOT_H;
+  const overCtx = over.getContext('2d', { willReadFrequently: true });
+
   const sample = () => {
     let data;
     try {
@@ -276,6 +287,16 @@ const HARNESS = `<!doctype html>
     if (colours.size > p.best) p.best = colours.size;
     if (p.hash === null) p.hash = hash;
     else if (p.hash !== hash) { p.changed++; p.hash = hash; }
+
+    try {
+      overCtx.fillStyle = '#000';
+      overCtx.fillRect(0, 0, SHOT_W, SHOT_H);
+      overCtx.drawImage(canvas, 0, 0, SHOT_W, SHOT_H);
+      const lit = overCtx.getImageData(0, 0, SHOT_W, SHOT_H).data;
+      const seen = new Set();
+      for (let i = 0; i < lit.length; i += 4) seen.add((lit[i] << 16) | (lit[i + 1] << 8) | lit[i + 2]);
+      if (seen.size > p.backdrop) p.backdrop = seen.size;
+    } catch { /* the plain read above already carries the error */ }
   };
   setInterval(sample, 250);
 
@@ -491,11 +512,37 @@ const record = (kind, text) => {
  */
 const drew = (p) => (p.pixels?.best ?? 0) > 1 && (p.pixels?.samples ?? 0) >= 2;
 
+/**
+ * Is the picture there and invisible to anything that composites it?
+ *
+ * The canvas reads as empty when it is drawn into a transparent target and has colour
+ * in it when it is drawn over an opaque one. Only one thing does that: a drawing buffer
+ * carrying the picture with its alpha left at zero. The browser treats such a buffer as
+ * premultiplied, so putting it on the page is `src.rgb + page.rgb`, which looks perfect;
+ * every other consumer gets `src.rgb + 0` at alpha 0, which `getImageData` un-premultiplies
+ * back to nothing.
+ *
+ * It is a defect in the port and not in the sampler, and the fix belongs in the port: ask
+ * Emscripten for a context with no alpha channel. Forcing it here would turn this run
+ * green while every host embedding this canvas still saw nothing.
+ */
+const transparent = (p) => (p.pixels?.best ?? 0) <= 1 && (p.pixels?.backdrop ?? 0) > 1;
+
+/** What the two readings of the canvas were, once they disagree. */
+const alphaNote = (p) =>
+  transparent(p)
+    ? ` The in-page sampler reads that same canvas as empty — ${p.pixels.opaque} opaque pixels in ${p.pixels.samples} samples — and reads ${p.pixels.backdrop} colours from it over an opaque backdrop. ` +
+      'The picture is in the drawing buffer with its alpha at zero, so the browser adds it to the page and everything else gets nothing. ' +
+      'A host that composites this canvas sees what the sampler sees. Context attributes below say whether it was asked for with an alpha channel.'
+    : (p.pixels?.best ?? 0) <= 1
+      ? ' The in-page sampler reads the canvas as empty over an opaque backdrop too, so this is not the alpha channel: the sampler is not reading this canvas at all, which is a finding about the instrument rather than about the port.'
+      : '';
+
 let shotNote = '';
 const vitals = (p) =>
   `stage=${p.stage} heartbeat=${p.heartbeat} loopTurns=${p.loopTurns} foreignFrames=${p.foreignFrames ?? 0} contexts=${p.contexts ?? 0}${shotNote} ` +
   (p.pixels
-    ? `pixels=${p.pixels.samples} samples, best ${p.pixels.best} colours, ${p.pixels.changed} changed, ${p.pixels.opaque} opaque`
+    ? `pixels=${p.pixels.samples} samples, best ${p.pixels.best} colours, ${p.pixels.changed} changed, ${p.pixels.opaque} opaque, ${p.pixels.backdrop} over black`
     : 'pixels=none');
 
 /**
@@ -725,14 +772,24 @@ async function main() {
     verdict = 'ALIVE BUT STALLED — callMain returned and the main thread answers, but the browser never handed it back to the page.';
     code = 1;
   } else if (shot && shot.colours > 1) {
-    verdict =
-      `DRAWING — the canvas shows ${shot.colours} distinct colours in a screenshot of what the browser is actually displaying ` +
-      `(${shot.bytes} bytes of PNG), over ${probe.loopTurns} event-loop turns and ${probe.heartbeat} heartbeats.` +
-      glNote(probe) +
-      (probe.pixels && probe.pixels.best <= 1
-        ? ' The in-page sampler disagrees and reads the canvas as empty; that is its compositing, not the port — see the note in the harness.'
-        : '');
-    code = 0;
+    const shown =
+      `the canvas shows ${shot.colours} distinct colours in a screenshot of what the browser is actually displaying ` +
+      `(${shot.bytes} bytes of PNG), over ${probe.loopTurns} event-loop turns and ${probe.heartbeat} heartbeats.`;
+    // A picture on the screen is not the same as a picture a host can use, and the
+    // difference is worth a red round: this package ships a canvas, not a tab.
+    if (transparent(probe)) {
+      verdict = `DRAWING, BUT TRANSPARENT — ${shown}` + alphaNote(probe) + glNote(probe);
+      code = 1;
+    } else {
+      verdict = `DRAWING — ${shown}` + alphaNote(probe) + glNote(probe);
+      code = 0;
+    }
+  } else if (transparent(probe)) {
+    // No screenshot to go on — the compositor refused, or the clip failed. The backdrop
+    // read still separates "nothing was drawn" from "all of it was drawn at zero alpha",
+    // and those are different bugs.
+    verdict = `DRAWING, BUT TRANSPARENT — nothing could be screenshotted, but the canvas is not empty.` + alphaNote(probe) + glNote(probe);
+    code = 1;
   } else if (shot && shot.colours === 1) {
     // A screenshot cannot tell a canvas cleared to one colour from one never painted at
     // all — an unpainted canvas shows the page behind it, which is also one colour. The

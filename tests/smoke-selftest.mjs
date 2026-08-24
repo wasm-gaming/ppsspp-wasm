@@ -31,14 +31,25 @@ const SETTLE = args.settle ?? '2';
 
 // `alsoExpect` is checked against the whole transcript rather than the verdict line, and
 // is where the diagnostic counters are pinned: a number nobody checks is a number that
-// quietly stops being computed.
+// quietly stops being computed. One pattern or a list of them.
 const CASES = [
   {
+    // Also the control for `transparent/` below, and the pair is the experiment: the two
+    // fakes differ in one argument — the alpha they clear with — and in nothing else. A
+    // sampler that reads this one directly is a sampler that can read a WebGL canvas
+    // under SwiftShader, which is what makes the other one's silence mean something.
     dir: 'draws',
     code: 0,
     expect: /^DRAWING —/m,
-    alsoExpect: /foreignFrames=[1-9]/,
-    why: 'a canvas with colour on it passes, and its animation frames are seen',
+    alsoExpect: [/foreignFrames=[1-9]/, /best [2-9]\d* colours/],
+    why: 'a canvas with colour on it passes, its animation frames are seen, and the sampler reads it directly',
+  },
+  {
+    dir: 'transparent',
+    code: 1,
+    expect: /^DRAWING, BUT TRANSPARENT —/m,
+    alsoExpect: /0 opaque, [2-9]\d* over black/,
+    why: 'a picture drawn at alpha 0 is on the screen and invisible to every host, and is named as that rather than as a sampler fault',
   },
   { dir: 'clears', code: 1, expect: /^CLEARED, NOT DRAWN —/m, why: 'a uniform canvas is not a picture' },
   { dir: 'blank', code: 1, expect: /^BLANK —/m, why: 'a live loop that never paints fails' },
@@ -74,8 +85,8 @@ for (const c of CASES) {
     { encoding: 'utf8' },
   );
   const out = (run.stdout ?? '') + (run.stderr ?? '');
-  const verdict = out.match(/^(?:DRAWING|CLEARED, NOT DRAWN|BLANK|BLOCKED|STOPPED|RUNNING|CRASHED|FAILED|ALIVE BUT STALLED|NO ANSWER|NO PICTURE READ)\b.*$/m)?.[0];
-  const ok = run.status === c.code && c.expect.test(out) && (!c.alsoExpect || c.alsoExpect.test(out));
+  const verdict = out.match(/^(?:DRAWING, BUT TRANSPARENT|DRAWING|CLEARED, NOT DRAWN|BLANK|BLOCKED|STOPPED|RUNNING|CRASHED|FAILED|ALIVE BUT STALLED|NO ANSWER|NO PICTURE READ)\b.*$/m)?.[0];
+  const ok = run.status === c.code && c.expect.test(out) && [].concat(c.alsoExpect ?? []).every((re) => re.test(out));
   console.log(`   ${ok ? 'ok  ' : 'FAIL'} exit ${run.status} (want ${c.code})`);
   console.log(`        ${verdict ?? '(no verdict line found)'}`);
   if (!ok) {

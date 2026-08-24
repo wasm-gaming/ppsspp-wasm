@@ -150,6 +150,7 @@ it finds:
 | Verdict | What the canvas looked like | Exit |
 | --- | --- | --- |
 | `DRAWING` | More than one colour, in at least two samples. | 0 |
+| `DRAWING, BUT TRANSPARENT` | Colour on the screen, and nothing readable off the canvas. | 1 |
 | `CLEARED, NOT DRAWN` | One flat colour, every sample. | 1 |
 | `BLANK` | Nothing ever presented — no opaque pixel at all. | 1 |
 | `NO PICTURE READ` | The sampler itself failed. A finding about the runner, so exit **2**. | 2 |
@@ -167,6 +168,29 @@ not change what is drawn — and a `DRAWING` verdict that only appeared with the
 would be the thing to distrust. The sample is taken with `drawImage`, not
 `gl.readPixels`, because patch 0009 means a frame can be sitting half-finished between
 animation frames and the instrument has no business touching those bindings.
+
+**The canvas is read twice, and the second read is the diagnosis.** Round 26 produced
+two readings that could not both be right: a screenshot of the tab with 1552 distinct
+colours in it, and an in-page `drawImage` of the same canvas with *no opaque pixel at
+all*. Two explanations fitted — a drawing buffer whose alpha is never written, or
+SwiftShader mishandling `drawImage` from a WebGL canvas — and neither had been
+established, which mattered because the first one is a defect a host would hit and the
+second is only an instrument's problem.
+
+The runner now samples a second time onto an **opaque backdrop**. A buffer carrying
+colour at alpha 0 composites to nothing on a transparent target and to its own colour on
+an opaque one, because the backdrop supplies the alpha it never wrote; a canvas the
+sampler genuinely cannot see comes back flat both times. One drawImage separates a
+finding about the port from a finding about the runner, and `DRAWING, BUT TRANSPARENT` is
+the verdict for the first — a red round, because this package ships a canvas rather than
+a tab, and a host embedding one whose alpha is zero sees exactly what the sampler saw.
+
+`tests/fakes/transparent/` is that case, and it is a pair with `draws/`: the same eight
+bands, cleared with alpha 0 instead of 1, in the same browser and through the same
+`drawImage`. The alpha-1 one is read back directly and the alpha-0 one is not, which is
+what rules SwiftShader out. Patch 0013 is the fix, and it is in the port rather than in
+the harness on purpose: forcing the attribute where the *instrument* makes its context
+would turn the smoke run green while everything this package ships stayed invisible.
 
 **A blank canvas has two causes, so the runner also counts GL calls.** A port issuing no
 draw calls at all is a render loop that is not running; one issuing thousands while never
@@ -429,15 +453,20 @@ worker can block for real.
 
 ### What is not done
 
-**It links, and it does not run.** All 1118 targets compile, `ppsspp.js`,
-`ppsspp.wasm` and `ppsspp.data` are produced, and the glue exports exactly what
-`../src/module.ts` declares. In a real browser PPSSPP then starts: it registers its
-VFS, reports SDL 3.4.2, and initialises its thread manager — and the tab dies, with
-`callMain()` never returning. That is the signature of a blocked browser main thread,
-which is what `SDL/SDLMain.cpp`'s loop does on every other platform. `-sPROXY_TO_PTHREAD`
-is the candidate fix and does **not** work as a flag flip: the module factory's promise
-never resolves, with `INVOKE_RUN` at either 0 or 1. Linking once with `-sASSERTIONS` is
-the next instrument.
+**It runs, and it draws its own UI.** All 1118 targets compile, the artifacts are
+produced, and the glue exports exactly what `../src/module.ts` declares. Round 26 is the
+measurement: 1552 distinct colours in a screenshot of the tab, 160684 draw calls over two
+minutes, all of them with the default framebuffer bound, and the Logo screen handing over
+to the main menu. The blocked main thread that stopped rounds 8 through 17 is what patch
+0008 fixes; nothing here needs `-sPROXY_TO_PTHREAD`, which did not work as a flag flip in
+any case — the module factory's promise never resolved with `INVOKE_RUN` at either value.
+
+**Its canvas was transparent, and the fix is unverified.** Everything that round drew
+carried alpha 0, so the browser showed it and nothing else could read it — see the two
+readings above. Patch 0013 asks Emscripten for a context with no alpha channel. The
+mechanism is established and the fix is one line of SDL vocabulary, but no round has run
+with it yet: what proves it is a smoke run reporting `alpha:false` in the context
+attributes and an in-page sampler that agrees with the screenshot.
 
 **SDL3 takes the canvas by CSS selector.** Its Emscripten video driver reads
 `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`, defaulting to `#canvas`, and fails window

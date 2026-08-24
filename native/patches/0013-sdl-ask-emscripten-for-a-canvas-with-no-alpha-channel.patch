@@ -1,0 +1,70 @@
+Subject: [PATCH 13/13] SDL: ask Emscripten for a canvas with no alpha channel
+
+PPSSPP draws its UI, the browser shows it, and every consumer of the canvas
+that is not the browser's own compositor sees nothing at all. Round 26 is the
+measurement: a screenshot of the tab has 1552 distinct colours in it, while the
+smoke harness reading the same canvas four times a second finds 0 opaque pixels
+and 1 colour across 481 samples.
+
+The context attributes the same round reported say why:
+
+    {"alpha":true, "premultipliedAlpha":true, "depth":true, "stencil":true, ...}
+
+A WebGL drawing buffer with an alpha channel is composited against the page as
+premultiplied data. PPSSPP never writes alpha into the backbuffer, so the buffer
+holds the picture in RGB with alpha at 0 everywhere, and the two readings follow
+from that one fact:
+
+  - on screen, `dst = src.rgb + page.rgb * (1 - 0)` — the picture is *added* to
+    the page and looks perfect;
+  - anywhere else, `drawImage` into a transparent target gives `src.rgb` at
+    alpha 0, and `getImageData` un-premultiplies that back to (0,0,0,0).
+
+Which of those a host gets depends only on whether it composites the canvas
+itself. Embedding this canvas in a page of its own — which is what this package
+is for — lands on the second one.
+
+Established rather than argued, and without an emulator round: tests/fakes/
+now holds two fakes that differ in one argument, the alpha they clear with.
+`draws/` (alpha 1) is read directly by the sampler; `transparent/` (alpha 0)
+reproduces round 26's fingerprint exactly — a screenshot with colour in it, 0
+opaque pixels, and the same picture recovered when the sampler draws the canvas
+over an opaque backdrop. Both run in the same browser, in the same SwiftShader,
+through the same drawImage, so the sampler and the browser are both exonerated
+and the alpha channel is not.
+
+SDL3 defaults SDL_GL_ALPHA_SIZE to 8, and src/video/emscripten/SDL_emscriptenopengles.c
+passes `_this->gl_config.alpha_size > 0` straight into the WebGL context
+attributes. Asking for 0 is therefore the whole fix, and it belongs here rather
+than in the harness: forcing the attribute where the instrument creates its
+context would turn the smoke run green while everything this package ships
+stayed invisible.
+
+Emscripten-only. A desktop window has no page behind it to be transparent
+against, and nothing in PPSSPP wants a see-through one.
+
+diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
+index a15c732fd..2ae7ccd6d 100644
+--- a/SDL/SDLMain.cpp
++++ b/SDL/SDLMain.cpp
+@@ -1852,6 +1852,20 @@
+ 	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+ 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+ 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
++#ifdef __EMSCRIPTEN__
++	// A WebGL drawing buffer with an alpha channel is composited *against the page*, and
++	// the browser treats it as premultiplied. PPSSPP does not write alpha into the
++	// backbuffer, so every pixel arrives with alpha 0 and colour in RGB: putting that on
++	// screen is `src.rgb + page.rgb`, which looks perfect, while anything else that reads
++	// the canvas — drawImage, toDataURL, a host compositing it into its own page — gets
++	// `src.rgb` at alpha 0 and un-premultiplies it back to nothing.
++	//
++	// SDL3 defaults SDL_GL_ALPHA_SIZE to 8 and its Emscripten driver passes
++	// `alpha_size > 0` straight to the WebGL context attributes, so asking for zero here
++	// is what gives this canvas an opaque drawing buffer. Nothing else in PPSSPP wants a
++	// see-through window.
++	SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
++#endif
+ 
+ 	// Force fullscreen if the resolution is too low to run windowed.
+ 	if (g_DesktopWidth < 480 * 2 && g_DesktopHeight < 272 * 2) {
