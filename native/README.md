@@ -461,12 +461,12 @@ to the main menu. The blocked main thread that stopped rounds 8 through 17 is wh
 0008 fixes; nothing here needs `-sPROXY_TO_PTHREAD`, which did not work as a flag flip in
 any case — the module factory's promise never resolved with `INVOKE_RUN` at either value.
 
-**Its canvas was transparent, and the fix is unverified.** Everything that round drew
-carried alpha 0, so the browser showed it and nothing else could read it — see the two
-readings above. Patch 0013 asks Emscripten for a context with no alpha channel. The
-mechanism is established and the fix is one line of SDL vocabulary, but no round has run
-with it yet: what proves it is a smoke run reporting `alpha:false` in the context
-attributes and an in-page sampler that agrees with the screenshot.
+**Its canvas was transparent until round 27.** Everything round 26 drew carried alpha 0,
+so the browser showed it and nothing else could read it — see the two readings above.
+Patch 0013 asks Emscripten for a context with no alpha channel, and round 27 is the
+measurement: `alpha:false` in the context attributes, 1586 colours in the screenshot, and
+an in-page sampler that now reads 1122 colours and 8160 opaque pixels — every pixel of
+its sample — where round 26 read none. The two readings of the canvas agree.
 
 **SDL3 takes the canvas by CSS selector.** Its Emscripten video driver reads
 `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`, defaulting to `#canvas`, and fails window
