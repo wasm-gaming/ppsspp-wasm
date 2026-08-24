@@ -115,6 +115,10 @@ export function stubLoader(log) {
       FS: stubFS(log),
       IDBFS: 'IDBFS',
       WORKERFS: 'WORKERFS',
+      // The real module's process environment, which is how the canvas selector
+      // reaches SDL3. Nothing in the stub reads it; it is here because
+      // `PpssppModule` says a module has one, and this file is checked against that.
+      ENV: {},
       callMain(argv) {
         log(`callMain ${argv.join(' ')}`);
         // Asynchronous, as the real one is: `callMain` returns when the main loop is

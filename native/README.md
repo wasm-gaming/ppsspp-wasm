@@ -150,6 +150,7 @@ it finds:
 | Verdict | What the canvas looked like | Exit |
 | --- | --- | --- |
 | `DRAWING` | More than one colour, in at least two samples. | 0 |
+| `DRAWING, BUT TRANSPARENT` | Colour on the screen, and nothing readable off the canvas. | 1 |
 | `CLEARED, NOT DRAWN` | One flat colour, every sample. | 1 |
 | `BLANK` | Nothing ever presented — no opaque pixel at all. | 1 |
 | `NO PICTURE READ` | The sampler itself failed. A finding about the runner, so exit **2**. | 2 |
@@ -167,6 +168,29 @@ not change what is drawn — and a `DRAWING` verdict that only appeared with the
 would be the thing to distrust. The sample is taken with `drawImage`, not
 `gl.readPixels`, because patch 0009 means a frame can be sitting half-finished between
 animation frames and the instrument has no business touching those bindings.
+
+**The canvas is read twice, and the second read is the diagnosis.** Round 26 produced
+two readings that could not both be right: a screenshot of the tab with 1552 distinct
+colours in it, and an in-page `drawImage` of the same canvas with *no opaque pixel at
+all*. Two explanations fitted — a drawing buffer whose alpha is never written, or
+SwiftShader mishandling `drawImage` from a WebGL canvas — and neither had been
+established, which mattered because the first one is a defect a host would hit and the
+second is only an instrument's problem.
+
+The runner now samples a second time onto an **opaque backdrop**. A buffer carrying
+colour at alpha 0 composites to nothing on a transparent target and to its own colour on
+an opaque one, because the backdrop supplies the alpha it never wrote; a canvas the
+sampler genuinely cannot see comes back flat both times. One drawImage separates a
+finding about the port from a finding about the runner, and `DRAWING, BUT TRANSPARENT` is
+the verdict for the first — a red round, because this package ships a canvas rather than
+a tab, and a host embedding one whose alpha is zero sees exactly what the sampler saw.
+
+`tests/fakes/transparent/` is that case, and it is a pair with `draws/`: the same eight
+bands, cleared with alpha 0 instead of 1, in the same browser and through the same
+`drawImage`. The alpha-1 one is read back directly and the alpha-0 one is not, which is
+what rules SwiftShader out. Patch 0013 is the fix, and it is in the port rather than in
+the harness on purpose: forcing the attribute where the *instrument* makes its context
+would turn the smoke run green while everything this package ships stayed invisible.
 
 **A blank canvas has two causes, so the runner also counts GL calls.** A port issuing no
 draw calls at all is a render loop that is not running; one issuing thousands while never
@@ -285,8 +309,8 @@ boots its stub afterwards.
 
 ## The bridge
 
-This is the whole of the C we add. It is small on purpose: everything else PPSSPP
-already does.
+`Core/WebBridge.cpp`, added by patch 0014. This is the whole of the C++ we add, and it
+is small on purpose: everything else PPSSPP already does.
 
 ```c
 // Called from JS. Return values are 1 for accepted, 0 for unknown key.
@@ -305,6 +329,24 @@ config field. `../src/settings.ts` is the complete list of keys that will ever a
 Only what `../src/spec.ts` advertises as `live: true` is ever sent here. Everything
 else reaches PPSSPP through the generated `ppsspp.ini` at boot.
 
+The settings half is `SetConfigValueFromString` in `Core/Config.cpp`, beside the table
+it needs: `g_sectionMeta` maps a section name to its `ConfigSetting` array, and
+`ConfigSetting::ReadFromIniSection` already turns a string into whichever type a setting
+is. So applying one value is a lookup plus a one-entry ini section to read it out of,
+rather than a second copy of the type switch. A section or key this build does not have
+returns 0, which the SDK reports rather than swallowing.
+
+`ppsspp_web_pause` is `Core_Break(BreakReason::UIPause)` and `ppsspp_web_resume` is
+`Core_Resume` — how PPSSPP itself implements a pause with no menu, see
+`VIRTKEY_PAUSE_NO_MENU` in `UI/EmuScreen.cpp`. Emulation stops, the last frame stays on
+the canvas, and no screen is pushed, so a host's own pause UI is the only one a player
+sees.
+
+The four are named in `-sEXPORTED_FUNCTIONS` as well as carrying `EMSCRIPTEN_KEEPALIVE`.
+The attribute is what keeps them; the flag is what makes a rename fail the *link* rather
+than the SDK's first `ccall`. `_main` has to be repeated in that list, because it
+replaces the default rather than adding to it.
+
 ### Events, going the other way
 
 One callback, registered on the module before instantiation as `Module.ppssppEvent`,
@@ -322,11 +364,31 @@ and called from C++ with a JSON-compatible object:
 `booted` is the important one: it must be emitted when the first frame is on its way,
 not when `main()` starts. `callMain` returns as soon as the main loop is registered,
 so `booted` is the only thing that can make `await sdk.start()` mean what a host reads
-it to mean. An engine that never emits it leaves `start()` pending forever.
+it to mean. An engine that never emits it leaves `start()` pending forever. The test the
+bridge uses is the boot having completed *and* the frontend having switched to the game,
+which is the point at which the next frame drawn is the game's.
 
-`pause` and `resume` are emitted for PPSSPP's **own** pause menu. The ones this
-package triggers through `ppsspp_web_pause` are emitted on the JS side, so the native
-side must not emit those too or a host would see each pause twice.
+**Every event is emitted from one function on one thread.** `PpssppWeb::Frame()` is
+called from SDLMain's Emscripten main loop, which is the browser's main thread — the
+only thread where a call into JS is legal and where the page's callback can run. What
+can be observed is polled there: a boot completing, the frame rate, PPSSPP's own pause
+menu opening, the frontend returning to its game list. What happens elsewhere is queued
+under a mutex and drained there, which is why there is no `MAIN_THREAD_ASYNC_EM_ASM`
+anywhere in the patch — nothing emits from a thread that would need one.
+
+Two producers cannot be polled and are hooked instead, both under `__EMSCRIPTEN__` and
+both three lines: a failed boot in `Core/System.cpp`, at the one point where the error
+string still exists before the caller consumes it and the boot state goes back to `Off`;
+and `Core/SaveState.cpp`, where `SaveSlot` and `LoadSlot` wrap the caller's own callback
+so a host hears about save states however they were triggered, PPSSPP's own menu
+included.
+
+Each event is built as a JS object from arguments that cross as numbers and pointers, so
+no C++ here has to escape a game title into JSON.
+
+`pause` and `resume` are emitted for PPSSPP's **own** pause menu. The ones this package
+triggers through `ppsspp_web_pause` are emitted on the JS side, so the native side must
+not emit those too or a host would see each pause twice.
 
 The shape is a plain object rather than a string plus arguments so that the same
 channel survives `postMessage` unchanged the day the module moves to a worker.
@@ -400,6 +462,15 @@ them came back different from what the reference fork suggested:
   (non-wasm code runs slowly across a growing heap). Accepted: PPSSPP cannot fit a
   fixed heap, and it needs its threads.
 
+### 0014 — the bridge
+
+The four `ppsspp_web_*` entry points, the event channel, `SetConfigValueFromString`
+beside the config table, the two notification hooks, and the CMake that exports them.
+See **The bridge** above for what each part does and why events are polled rather than
+hooked. It is the first patch in the series that adds a file rather than changing one,
+and `Core/WebBridge.cpp` is the only source in this port that has no upstream equivalent
+— everything else is a change to something PPSSPP already had.
+
 ### 0004, 0005 — two more things upstream never compiled
 
 Both are upstream bugs rather than Emscripten ones, found by being the first build to
@@ -429,27 +500,73 @@ worker can block for real.
 
 ### What is not done
 
-**It links, and it does not run.** All 1118 targets compile, `ppsspp.js`,
-`ppsspp.wasm` and `ppsspp.data` are produced, and the glue exports exactly what
-`../src/module.ts` declares. In a real browser PPSSPP then starts: it registers its
-VFS, reports SDL 3.4.2, and initialises its thread manager — and the tab dies, with
-`callMain()` never returning. That is the signature of a blocked browser main thread,
-which is what `SDL/SDLMain.cpp`'s loop does on every other platform. `-sPROXY_TO_PTHREAD`
-is the candidate fix and does **not** work as a flag flip: the module factory's promise
-never resolves, with `INVOKE_RUN` at either 0 or 1. Linking once with `-sASSERTIONS` is
-the next instrument.
+**The bridge links and answers; its events are unproven.** Round 30: the build links
+with `-sEXPORTED_FUNCTIONS` naming four symbols that have to exist, and the smoke run's
+probe gets `1, 1, 0` out of `ppsspp_web_apply_setting` — so `ccall` reaches the export
+and the lookup in PPSSPP's config table is real. Every *event* is still untested by
+anything but reading: a smoke run boots no game, so `booted` and `fps` cannot fire, and
+`pause`, `exit` and `saveState` need input the harness does not drive. The first thing
+that exercises them is a session that boots a real ISO.
 
-**SDL3 takes the canvas by CSS selector.** Its Emscripten video driver reads
-`SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`, defaulting to `#canvas`, and fails window
-creation outright when nothing matches — `SDLGLGraphicsContext::InitSurface: no window
-or GL context` is what that looks like. SDL2 took the element from `Module.canvas`;
-SDL3 does not, so the note in `../src/module.ts` about the canvas is out of date and
-this is a contract question: the SDK builds a new canvas per restart and cannot call
-them all `canvas`.
+**It runs, and it draws its own UI.** All 1118 targets compile, the artifacts are
+produced, and the glue exports exactly what `../src/module.ts` declares. Round 26 is the
+measurement: 1552 distinct colours in a screenshot of the tab, 160684 draw calls over two
+minutes, all of them with the default framebuffer bound, and the Logo screen handing over
+to the main menu. The blocked main thread that stopped rounds 8 through 17 is what patch
+0008 fixes; nothing here needs `-sPROXY_TO_PTHREAD`, which did not work as a flag flip in
+any case — the module factory's promise never resolved with `INVOKE_RUN` at either value.
 
-The bridge in the next section is also still unwritten, so nothing exports
-`ppsspp_web_*` yet and `-sEXPORTED_FUNCTIONS` is deliberately absent: naming a symbol
-that does not exist is a link error.
+**Its canvas was transparent until round 27.** Everything round 26 drew carried alpha 0,
+so the browser showed it and nothing else could read it — see the two readings above.
+Patch 0013 asks Emscripten for a context with no alpha channel, and round 27 is the
+measurement: `alpha:false` in the context attributes, 1586 colours in the screenshot, and
+an in-page sampler that now reads 1122 colours and 8160 opaque pixels — every pixel of
+its sample — where round 26 read none. The two readings of the canvas agree.
+
+**SDL3 takes the canvas by CSS selector, and now it is given one.** Its Emscripten
+video driver reads `SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR`, defaulting to `#canvas`, and
+fails window creation outright when nothing matches —
+`SDLGLGraphicsContext::InitSurface: no window or GL context` is what that looks like.
+SDL2 took the element from `Module.canvas`; SDL3 does not.
+
+`SDL_GetHint` reads the environment before its own hint table, so the selector crosses
+the seam as `PpssppModuleInit.canvasSelector` and the loader writes it into `Module.ENV`.
+`ENV` is in `-sEXPORTED_RUNTIME_METHODS` for that and nothing else, and no C is involved.
+Each session's canvas carries an id of its own (`ppsspp-canvas-N`), which is what a
+restart needs: a new canvas is a new target, and they cannot all be called `canvas`.
+
+**It is written from `preRun`, and that is not a detail.** Emscripten copies `ENV` into
+the environment C sees in `__emscripten_environ_constructor`, which is a *static
+constructor* — so it runs inside `__wasm_call_ctors`, which `initRuntime()` calls during
+instantiation. `run()` calls `preRun()` and only then `initRuntime()`, so `preRun` is the
+last point at which a write still lands. Round 28 is the other version of this measured:
+the write happened on the resolved module, which looks equivalent and is a write nobody
+reads. What it produced was
+
+```
+Failed to initialize graphics backend: SDLGLGraphicsContext::InitSurface: no window or GL context
+```
+
+— SDL falling back to `#canvas`, finding nothing, and failing window creation. The
+callback is handed the module by `callRuntimeCallbacks`, which passes `Module` as its
+first argument.
+
+SDL offers a second way in — `SDL_PROP_WINDOW_CREATE_EMSCRIPTEN_CANVAS_ID_STRING` on
+`SDL_CreateWindowWithProperties`, which is per window rather than per process, and a
+closer fit to what this package does. It would mean patching PPSSPP's own window
+creation; the hint needs nothing from upstream, so it is what is here.
+
+`make smoke` serves its canvas as `#ppsspp-smoke` rather than `#canvas`, deliberately:
+the default would work whether or not the hint arrived, and a test that cannot fail is
+not a test.
+
+**The run also asks the bridge a question**, because linking proves the four symbols
+exist and nothing else. It calls `ppsspp_web_apply_setting` three times — a key PPSSPP
+has, one of this package's own `Web/` keys, and one that cannot exist — and reports the
+three answers. `1, 1, 0` is the only correct set. Both real keys are chosen to have no
+effect on the picture, since the verdict is a screenshot and an instrument that changed
+what it measured would be worth less than none. What a smoke run still cannot reach is
+every *event*: it boots no game, so `booted` and `fps` never fire.
 
 **Note for anyone building in this repository's own agent sandbox:** the Emscripten
 ports (SDL3, SDL3_ttf, freetype, harfbuzz, zlib) are fetched from GitHub *archive*

@@ -115,13 +115,35 @@ test('the ini is written after the memory stick is read in, so contract state wi
 test('restart builds a second module and a second canvas', async () => {
   const { fake, target, play } = await booted();
   const first = fake.init().canvas;
+  const firstSelector = fake.init().canvasSelector;
 
   await play.restart({ stateSlot: 3 });
 
   assert.equal(fake.log.instances, 2, 'an Emscripten module runs main() once, so a restart is a new one');
   assert.notEqual(fake.init().canvas, first, 'a canvas yields one WebGL context for its whole life');
+  assert.notEqual(
+    fake.init().canvasSelector,
+    firstSelector,
+    'and SDL3 is pointed at the new one — a reused selector would render into the spent canvas',
+  );
   assert.equal(target.children.length, 1, 'and the spent one is gone from the DOM');
   assert.equal(fake.log.terminated, 1, 'the first module\'s worker pool was wound down');
+});
+
+test('the canvas selector resolves to the canvas, and to nothing else', async () => {
+  const { fake, target } = await booted();
+  const { canvas, canvasSelector } = fake.init();
+
+  // SDL3's Emscripten video driver takes a CSS selector rather than the element, and
+  // fails window creation outright when nothing matches — so "these two agree" is the
+  // whole of what stands between a session and `InitSurface: no window or GL context`.
+  assert.equal(canvasSelector, `#${canvas.id}`);
+  assert.ok(canvas.id, 'a canvas with no id would be selected by `#`, which matches nothing');
+  assert.deepEqual(
+    [...target.children].filter((child) => child.id === canvas.id),
+    [canvas],
+    'exactly one element answers to it',
+  );
 });
 
 test('a live change is applied now; a non-live one waits for the next boot', async () => {

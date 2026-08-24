@@ -91,8 +91,30 @@ function requireIsolation(): void {
 export const loadPpsspp: PpssppLoader = async (init: PpssppModuleInit): Promise<PpssppModule> => {
   requireIsolation();
   const create = await glue();
-  return create({
+  const module = await create({
     canvas: init.canvas,
+    // How SDL3 is told where to render, and it has to happen *here* rather than on the
+    // module afterwards. `SDL_GetHint` reads the environment, Emscripten builds that
+    // environment from `ENV` in `__emscripten_environ_constructor` — a static
+    // constructor, so it runs inside `__wasm_call_ctors` — and `initRuntime()` calls
+    // that during instantiation. `preRun` is the last point before it. Writing
+    // `module.ENV` after `await create(...)` looks equivalent and is not: the copy C
+    // sees was already taken, `SDL_GetHint` falls back to `#canvas`, and window
+    // creation fails with `InitSurface: no window or GL context`. Round 28 is that
+    // mistake, measured.
+    //
+    // The callback is handed the module by `callRuntimeCallbacks`, which passes
+    // `Module` as its first argument.
+    //
+    // SDL offers a second way in — `SDL_PROP_WINDOW_CREATE_EMSCRIPTEN_CANVAS_ID_STRING`
+    // on `SDL_CreateWindowWithProperties`, per window rather than per process, which is
+    // a closer fit to what this package does. It would mean patching PPSSPP's own
+    // window creation; this needs nothing from upstream.
+    preRun: [
+      (mod: PpssppModule) => {
+        mod.ENV.SDL_EMSCRIPTEN_CANVAS_SELECTOR = init.canvasSelector;
+      },
+    ],
     // Read by the `-sPTHREAD_POOL_SIZE` expression the build links with, which is how
     // a link-time pool size is made to follow a runtime decision. See native/README.md.
     pthreadPoolSize: init.pthreadPoolSize,
@@ -118,4 +140,6 @@ export const loadPpsspp: PpssppLoader = async (init: PpssppModuleInit): Promise<
     ...(init.onAbort ? { onAbort: init.onAbort } : {}),
     ...(init.ppssppEvent ? { ppssppEvent: init.ppssppEvent } : {}),
   });
+
+  return module;
 };

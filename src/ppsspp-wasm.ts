@@ -87,6 +87,15 @@ function poolSize(threads: number | undefined): number {
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 
 /**
+ * Numbers the canvases, so that each one has an id nothing else on the page shares.
+ *
+ * Per module rather than per session on purpose: two `PpssppPlay`s on one page would
+ * otherwise hand SDL3 the same selector, and the second one would render into the
+ * first one's element.
+ */
+let canvasSerial = 0;
+
+/**
  * The live emulator.
  *
  * @see {@link PpssppSDK} for the factory a host actually constructs.
@@ -170,6 +179,11 @@ export class PpssppPlay extends EnginePlayBase<PpssppPayloads> {
     const canvas = this.#freshCanvas();
     const module = await this.#loader({
       canvas,
+      // SDL3 finds the canvas by selector rather than by element — see
+      // `PpssppModuleInit.canvasSelector`. The id is this session's own, so two
+      // players on one page do not fight over it, and so a restart's new canvas is a
+      // new target rather than a stale one.
+      canvasSelector: `#${canvas.id}`,
       pthreadPoolSize: poolSize(config.threads),
       ppssppEvent: (event) => this.#native(event),
       // Emscripten's own fatal path does not go through `ppssppEvent`, so it needs
@@ -279,6 +293,11 @@ export class PpssppPlay extends EnginePlayBase<PpssppPayloads> {
     if (!target) throw new Error('ppsspp: mount(target) before start()');
     this.#canvas?.remove();
     const canvas = target.ownerDocument.createElement('canvas');
+    // Unique, and generated rather than fixed: SDL3 is handed `#<this>` and resolves
+    // it against the whole document, so a second session on the same page — or the
+    // canvas a previous `start()` has not finished removing — must not match it. The
+    // shape is ours, so it needs no escaping to be a valid selector.
+    canvas.id = `ppsspp-canvas-${++canvasSerial}`;
     canvas.width = 480;
     canvas.height = 272;
     canvas.style.display = 'block';

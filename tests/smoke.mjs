@@ -84,13 +84,15 @@ const HARNESS = `<!doctype html>
 <title>ppsspp smoke</title>
 <style>html,body{margin:0;background:#111}canvas{display:block;width:480px;height:272px}</style>
 <!--
-  id="canvas" because SDL3's Emscripten video driver resolves a CSS selector from
-  SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR, defaulting to "#canvas", and fails window
-  creation outright when nothing matches. The SDK cannot use that id — it builds a new
-  canvas per restart — but that is a separate open question, and this harness tests one
-  thing at a time.
+  Deliberately *not* id="canvas", which is what SDL3's Emscripten video driver falls
+  back to when SDL_HINT_EMSCRIPTEN_CANVAS_SELECTOR is unset. The SDK cannot use that id
+  — it builds a new canvas per session, and they cannot all be called the same thing —
+  so it writes the selector into Module.ENV before callMain, and this page does the
+  same. Naming the element anything else is what makes that a real test: if the hint
+  never reaches SDL, window creation fails outright rather than quietly finding a
+  canvas the SDK would never have.
 -->
-<canvas id="canvas" width="480" height="272"></canvas>
+<canvas id="ppsspp-smoke" width="480" height="272"></canvas>
 <script type="module">
   const state = {
     stage: 'loading',
@@ -104,7 +106,8 @@ const HARNESS = `<!doctype html>
       binds: 0, bindsDefault: 0, bindTargets: {}, firstBinds: [], bindKinds: {},
       onCanvas: true,
     },
-    pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, hash: null, error: null },
+    pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, backdrop: 0, hash: null, error: null },
+    bridge: null,
     stdout: [],
     stderr: [],
     events: [],
@@ -137,7 +140,8 @@ const HARNESS = `<!doctype html>
     return realRaf(cb);
   };
 
-  const canvas = document.getElementById('canvas');
+  const CANVAS_SELECTOR = '#ppsspp-smoke';
+  const canvas = document.querySelector(CANVAS_SELECTOR);
 
   // -- reading the picture back ---------------------------------------------
   //
@@ -249,6 +253,17 @@ const HARNESS = `<!doctype html>
   shot.height = SHOT_H;
   const shotCtx = shot.getContext('2d', { willReadFrequently: true });
 
+  // The same read a second time, onto an opaque backdrop, and it is the whole of the
+  // experiment that tells the two candidate explanations apart. A drawing buffer whose
+  // alpha the emulator never wrote composites to nothing above and to its own colour
+  // here, because the backdrop supplies the alpha it is missing; a canvas this sampler
+  // simply cannot read comes back flat both times. One is a finding about the port, the
+  // other about the instrument, and they are one drawImage apart.
+  const over = document.createElement('canvas');
+  over.width = SHOT_W;
+  over.height = SHOT_H;
+  const overCtx = over.getContext('2d', { willReadFrequently: true });
+
   const sample = () => {
     let data;
     try {
@@ -276,6 +291,16 @@ const HARNESS = `<!doctype html>
     if (colours.size > p.best) p.best = colours.size;
     if (p.hash === null) p.hash = hash;
     else if (p.hash !== hash) { p.changed++; p.hash = hash; }
+
+    try {
+      overCtx.fillStyle = '#000';
+      overCtx.fillRect(0, 0, SHOT_W, SHOT_H);
+      overCtx.drawImage(canvas, 0, 0, SHOT_W, SHOT_H);
+      const lit = overCtx.getImageData(0, 0, SHOT_W, SHOT_H).data;
+      const seen = new Set();
+      for (let i = 0; i < lit.length; i += 4) seen.add((lit[i] << 16) | (lit[i + 1] << 8) | lit[i + 2]);
+      if (seen.size > p.backdrop) p.backdrop = seen.size;
+    } catch { /* the plain read above already carries the error */ }
   };
   setInterval(sample, 250);
 
@@ -295,6 +320,16 @@ const HARNESS = `<!doctype html>
     const mod = await createPpsspp({
       canvas,
       pthreadPoolSize: ${POOL},
+      // Where SDL3 is told to render, and the same call src/loader.ts makes. It has to
+      // be preRun rather than a write on the module afterwards: Emscripten copies ENV
+      // into the environment C sees from a static constructor, which initRuntime() runs
+      // during instantiation, so anything later is a write nobody reads. Round 28 is
+      // that mistake measured — 'InitSurface: no window or GL context', because SDL fell
+      // back to '#canvas' and this page deliberately has no such element.
+      preRun: [(m) => {
+        m.ENV.SDL_EMSCRIPTEN_CANVAS_SELECTOR = CANVAS_SELECTOR;
+        say({ kind: 'stage', text: 'canvas selector ' + CANVAS_SELECTOR });
+      }],
       // The glue is served under /native/ and the page is at /, which is the shape of
       // a real host — the emulator inside node_modules, the page anywhere. Without
       // this, Emscripten asks the *document* for ppsspp.data, gets a 404 and waits for
@@ -326,6 +361,33 @@ const HARNESS = `<!doctype html>
 
     state.stage = 'returned';
     say({ kind: 'stage', text: 'callMain returned', heartbeatDuringCall: state.heartbeat - before });
+
+    // Ask the bridge something, and check what it answers.
+    //
+    // Linking proves the four ppsspp_web_* symbols exist; it proves nothing about the
+    // settings half, which is a lookup in PPSSPP's own config table and can be wrong in
+    // every way a lookup can. One known key, one of this package's own Web/ keys, and
+    // one that cannot exist: 1, 1, 0 is the only correct answer, and any other tells a
+    // round something a compile log never would.
+    //
+    // Both real keys are chosen to have no effect on the picture — the verdict is a
+    // screenshot, and an instrument that changed what it was measuring would be worth
+    // less than no instrument.
+    setTimeout(() => {
+      try {
+        if (typeof mod.ccall !== 'function') return;
+        const ask = (key, value) => mod.ccall('ppsspp_web_apply_setting', 'number', ['string', 'string'], [key, value]);
+        state.bridge = {
+          known: ask('Sound/GameVolume', '5'),
+          web: ask('Web/FastForward', 'False'),
+          unknown: ask('Nowhere/NoSuchSetting', '1'),
+        };
+        say({ kind: 'bridge', text: JSON.stringify(state.bridge) });
+      } catch (e) {
+        state.bridge = { error: String(e) };
+        say({ kind: 'bridge', text: String(e) });
+      }
+    }, 1000);
   } catch (e) {
     state.stage = 'threw';
     state.error = String(e && e.stack || e);
@@ -491,11 +553,53 @@ const record = (kind, text) => {
  */
 const drew = (p) => (p.pixels?.best ?? 0) > 1 && (p.pixels?.samples ?? 0) >= 2;
 
+/**
+ * Is the picture there and invisible to anything that composites it?
+ *
+ * The canvas reads as empty when it is drawn into a transparent target and has colour
+ * in it when it is drawn over an opaque one. Only one thing does that: a drawing buffer
+ * carrying the picture with its alpha left at zero. The browser treats such a buffer as
+ * premultiplied, so putting it on the page is `src.rgb + page.rgb`, which looks perfect;
+ * every other consumer gets `src.rgb + 0` at alpha 0, which `getImageData` un-premultiplies
+ * back to nothing.
+ *
+ * It is a defect in the port and not in the sampler, and the fix belongs in the port: ask
+ * Emscripten for a context with no alpha channel. Forcing it here would turn this run
+ * green while every host embedding this canvas still saw nothing.
+ */
+const transparent = (p) => (p.pixels?.best ?? 0) <= 1 && (p.pixels?.backdrop ?? 0) > 1;
+
+/**
+ * What the bridge answered, which is the only part of it a smoke run can reach.
+ *
+ * The harness boots no game, so `booted`, `fps` and the rest never fire and nothing
+ * here says they work. What it does say is that the exported function exists, that
+ * `ccall` reaches it, and that the lookup in PPSSPP's config table tells a real setting
+ * from an invented one — 1, 1, 0.
+ */
+const bridgeNote = (p) =>
+  p.bridge
+    ? p.bridge.error
+      ? ` Bridge: the call threw — ${p.bridge.error}.`
+      : ` Bridge: apply_setting answered ${p.bridge.known} for a known key, ${p.bridge.web} for Web/FastForward, ` +
+        `${p.bridge.unknown} for one that does not exist${p.bridge.known === 1 && p.bridge.web === 1 && p.bridge.unknown === 0 ? '' : ' — and 1, 1, 0 is what it should be'}.`
+    : ' Bridge: never asked.';
+
+/** What the two readings of the canvas were, once they disagree. */
+const alphaNote = (p) =>
+  transparent(p)
+    ? ` The in-page sampler reads that same canvas as empty — ${p.pixels.opaque} opaque pixels in ${p.pixels.samples} samples — and reads ${p.pixels.backdrop} colours from it over an opaque backdrop. ` +
+      'The picture is in the drawing buffer with its alpha at zero, so the browser adds it to the page and everything else gets nothing. ' +
+      'A host that composites this canvas sees what the sampler sees. Context attributes below say whether it was asked for with an alpha channel.'
+    : (p.pixels?.best ?? 0) <= 1
+      ? ' The in-page sampler reads the canvas as empty over an opaque backdrop too, so this is not the alpha channel: the sampler is not reading this canvas at all, which is a finding about the instrument rather than about the port.'
+      : '';
+
 let shotNote = '';
 const vitals = (p) =>
   `stage=${p.stage} heartbeat=${p.heartbeat} loopTurns=${p.loopTurns} foreignFrames=${p.foreignFrames ?? 0} contexts=${p.contexts ?? 0}${shotNote} ` +
   (p.pixels
-    ? `pixels=${p.pixels.samples} samples, best ${p.pixels.best} colours, ${p.pixels.changed} changed, ${p.pixels.opaque} opaque`
+    ? `pixels=${p.pixels.samples} samples, best ${p.pixels.best} colours, ${p.pixels.changed} changed, ${p.pixels.opaque} opaque, ${p.pixels.backdrop} over black`
     : 'pixels=none');
 
 /**
@@ -618,7 +722,7 @@ async function main() {
     try {
       const { result } = await browser.send(
         'Runtime.evaluate',
-        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,contextAttrs:__smoke.contextAttrs,foreignFrames:__smoke.foreignFrames,gl:__smoke.gl,pixels:__smoke.pixels})', returnByValue: true },
+        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,contextAttrs:__smoke.contextAttrs,foreignFrames:__smoke.foreignFrames,gl:__smoke.gl,pixels:__smoke.pixels,bridge:__smoke.bridge})', returnByValue: true },
         sessionId,
         2000,
       );
@@ -659,7 +763,7 @@ async function main() {
   try {
     const { result: rectResult } = await browser.send(
       'Runtime.evaluate',
-      { expression: 'JSON.stringify((({x,y,width,height}) => ({x,y,width,height}))(document.getElementById("canvas").getBoundingClientRect()))', returnByValue: true },
+      { expression: 'JSON.stringify((({x,y,width,height}) => ({x,y,width,height}))(document.querySelector("#ppsspp-smoke").getBoundingClientRect()))', returnByValue: true },
       sessionId,
       5000,
     );
@@ -725,14 +829,24 @@ async function main() {
     verdict = 'ALIVE BUT STALLED — callMain returned and the main thread answers, but the browser never handed it back to the page.';
     code = 1;
   } else if (shot && shot.colours > 1) {
-    verdict =
-      `DRAWING — the canvas shows ${shot.colours} distinct colours in a screenshot of what the browser is actually displaying ` +
-      `(${shot.bytes} bytes of PNG), over ${probe.loopTurns} event-loop turns and ${probe.heartbeat} heartbeats.` +
-      glNote(probe) +
-      (probe.pixels && probe.pixels.best <= 1
-        ? ' The in-page sampler disagrees and reads the canvas as empty; that is its compositing, not the port — see the note in the harness.'
-        : '');
-    code = 0;
+    const shown =
+      `the canvas shows ${shot.colours} distinct colours in a screenshot of what the browser is actually displaying ` +
+      `(${shot.bytes} bytes of PNG), over ${probe.loopTurns} event-loop turns and ${probe.heartbeat} heartbeats.`;
+    // A picture on the screen is not the same as a picture a host can use, and the
+    // difference is worth a red round: this package ships a canvas, not a tab.
+    if (transparent(probe)) {
+      verdict = `DRAWING, BUT TRANSPARENT — ${shown}` + alphaNote(probe) + glNote(probe);
+      code = 1;
+    } else {
+      verdict = `DRAWING — ${shown}` + alphaNote(probe) + glNote(probe) + bridgeNote(probe);
+      code = 0;
+    }
+  } else if (transparent(probe)) {
+    // No screenshot to go on — the compositor refused, or the clip failed. The backdrop
+    // read still separates "nothing was drawn" from "all of it was drawn at zero alpha",
+    // and those are different bugs.
+    verdict = `DRAWING, BUT TRANSPARENT — nothing could be screenshotted, but the canvas is not empty.` + alphaNote(probe) + glNote(probe);
+    code = 1;
   } else if (shot && shot.colours === 1) {
     // A screenshot cannot tell a canvas cleared to one colour from one never painted at
     // all — an unpainted canvas shows the page behind it, which is also one colour. The

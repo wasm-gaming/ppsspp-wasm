@@ -99,6 +99,9 @@ export function fakeEngine(options = {}) {
       FS,
       IDBFS: 'IDBFS',
       WORKERFS: 'WORKERFS',
+      // Where the real loader writes SDL3's canvas selector. Kept as a plain object so
+      // a test can read back what was written into it.
+      ENV: {},
       callMain(argv) {
         log.argv = argv;
         // Asynchronous on purpose: the real `callMain` returns as soon as the main
