@@ -643,17 +643,55 @@ async function main() {
     }
   }
 
-  // A second opinion, from the compositor rather than from the page. Page.captureScreenshot
-  // returns what the browser would actually show, which is a different path from the
-  // drawImage sampling above — different enough that if the two disagree, the disagreement
-  // is itself the finding. The length of the PNG is a crude proxy for "is there anything
-  // in it", and is labelled as crude: a blank rectangle compresses to almost nothing.
-  let shotBytes = null;
+  // What the browser actually shows, clipped to the canvas.
+  //
+  // This is the verdict's evidence now, and the drawImage sampling in the page has been
+  // demoted to a second opinion. Round 25 is why: the compositor returned a 46 KB PNG of
+  // a region the in-page sampler was reading as empty, and a 480x272 blank rectangle does
+  // not compress to 46 KB. The context is created with alpha and premultipliedAlpha, so a
+  // drawing buffer the emulator leaves at zero alpha composites to nothing when *we* draw
+  // it into a scratch canvas — while the browser puts it on screen perfectly well. The
+  // sampler was measuring its own compositing, not the port.
+  //
+  // A screenshot has no such problem: it is opaque pixels of what a person would see.
+  // Clipped to the canvas so the page's own background cannot be mistaken for content.
+  let shot = null;
   try {
-    const shot = await browser.send('Page.captureScreenshot', { format: 'png' }, sessionId, 5000);
-    shotBytes = Math.round((shot.data?.length ?? 0) * 3 / 4);
-    shotNote = ` screenshot=${shotBytes}B`;
-  } catch {
+    const { result: rectResult } = await browser.send(
+      'Runtime.evaluate',
+      { expression: 'JSON.stringify((({x,y,width,height}) => ({x,y,width,height}))(document.getElementById("canvas").getBoundingClientRect()))', returnByValue: true },
+      sessionId,
+      5000,
+    );
+    const rect = JSON.parse(rectResult.value);
+    const png = await browser.send(
+      'Page.captureScreenshot',
+      { format: 'png', clip: { ...rect, scale: 1 }, captureBeyondViewport: true },
+      sessionId,
+      15000,
+    );
+    // Graded in the page, because Node has no PNG decoder and the browser is right there.
+    // A PNG is opaque, so this counts the colours a viewer would actually see.
+    const grade = await browser.send(
+      'Runtime.evaluate',
+      {
+        expression:
+          '(async () => { const i = new Image(); i.src = "data:image/png;base64," + ' +
+          JSON.stringify(png.data) +
+          '; await i.decode(); const c = document.createElement("canvas"); c.width = 120; c.height = 68;' +
+          ' const x = c.getContext("2d", { willReadFrequently: true }); x.drawImage(i, 0, 0, c.width, c.height);' +
+          ' const d = x.getImageData(0, 0, c.width, c.height).data; const s = new Set();' +
+          ' for (let n = 0; n < d.length; n += 4) s.add((d[n] << 16) | (d[n + 1] << 8) | d[n + 2]);' +
+          ' return JSON.stringify({ colours: s.size }); })()',
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      sessionId,
+      15000,
+    );
+    shot = { bytes: Math.round((png.data?.length ?? 0) * 3 / 4), ...JSON.parse(grade.result.value) };
+    shotNote = ` screenshot=${shot.bytes}B/${shot.colours}col`;
+  } catch (e) {
     // A page that cannot answer has already been reported as BLOCKED; nothing to add.
   }
 
@@ -685,6 +723,26 @@ async function main() {
     code = 1;
   } else if (probe.loopTurns === 0) {
     verdict = 'ALIVE BUT STALLED — callMain returned and the main thread answers, but the browser never handed it back to the page.';
+    code = 1;
+  } else if (shot && shot.colours > 1) {
+    verdict =
+      `DRAWING — the canvas shows ${shot.colours} distinct colours in a screenshot of what the browser is actually displaying ` +
+      `(${shot.bytes} bytes of PNG), over ${probe.loopTurns} event-loop turns and ${probe.heartbeat} heartbeats.` +
+      glNote(probe) +
+      (probe.pixels && probe.pixels.best <= 1
+        ? ' The in-page sampler disagrees and reads the canvas as empty; that is its compositing, not the port — see the note in the harness.'
+        : '');
+    code = 0;
+  } else if (shot && shot.colours === 1) {
+    // A screenshot cannot tell a canvas cleared to one colour from one never painted at
+    // all — an unpainted canvas shows the page behind it, which is also one colour. The
+    // GL counters can, and the distinction is worth keeping: one is a renderer that runs
+    // and draws nothing, the other never got as far as a surface.
+    const cleared = (probe.gl?.clearsToCanvas ?? 0) > 0;
+    verdict = cleared
+      ? `CLEARED, NOT DRAWN — the canvas is a single flat colour in a screenshot of what the browser is actually displaying, and something cleared it ${probe.gl.clearsToCanvas} times. A renderer owns it and draws nothing on top.`
+      : `BLANK — the canvas is a single flat colour in a screenshot of what the browser is actually displaying, and nothing ever cleared it either, over ${probe.loopTurns} event-loop turns.`;
+    verdict += glNote(probe);
     code = 1;
   } else if (!probe.pixels || probe.pixels.samples === 0) {
     // Exit 2, not 1. The other verdicts are findings about the port; this one is a
