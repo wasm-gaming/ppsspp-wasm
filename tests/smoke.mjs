@@ -25,7 +25,7 @@
  * instrument that cannot fail is not an instrument.
  *
  * Usage: node tests/smoke.mjs [--artifacts=src/native] [--timeout=90] [--settle=8]
- *                             [--pool=16] [--chromium=PATH]
+ *                             [--pool=16] [--loglevel=4] [--chromium=PATH]
  */
 
 import { createServer } from 'node:http';
@@ -48,6 +48,18 @@ const TIMEOUT_MS = Number(args.timeout ?? 90) * 1000;
 // registers and then dies on its first frame is not a working main loop, and under
 // SwiftShader the first frame with anything on it takes a while to arrive.
 const SETTLE_MS = Number(args.settle ?? 8) * 1000;
+// PPSSPP's own log level, passed to callMain as --loglevel=N.
+//
+// Not a nicety. Config::Load() calls LogManager::LoadConfig(), which sets *every*
+// channel to LERROR when the ini has no [Log] section — and a smoke run always boots on
+// a fresh memory stick, so it never does. LINFO is 4 and LERROR is 2, and LogLine drops
+// anything numerically above the channel's level, so from that moment on the entire boot
+// is invisible: no "Entering separate emu thread", no GL version string, nothing. Round
+// 18 read that silence as a stalled emu thread, and the silence does not support it.
+//
+// NativeInit applies the command line *after* the config, so this wins. 0 passes no flag
+// at all and restores the old, mute behaviour.
+const LOG_LEVEL = Number(args.loglevel ?? 4);
 // Sized for a deadlock, not for speed. Emscripten grows its worker pool by returning
 // to the event loop; PPSSPP's render thread does not return to the event loop while it
 // waits for a frame. So a pool that runs out mid-boot does not slow down — it stops:
@@ -270,7 +282,7 @@ const HARNESS = `<!doctype html>
 
     state.stage = 'callMain';
     say({ kind: 'stage', text: 'callMain' });
-    mod.callMain([]);
+    mod.callMain(${JSON.stringify(LOG_LEVEL > 0 ? [`--loglevel=${LOG_LEVEL}`] : [])});
 
     state.stage = 'returned';
     say({ kind: 'stage', text: 'callMain returned', heartbeatDuringCall: state.heartbeat - before });
@@ -545,7 +557,11 @@ async function main() {
   await browser.send('Inspector.enable', {}, sessionId);
   await browser.send('Runtime.addBinding', { name: '__smokeReport' }, sessionId);
 
-  record('runner', `serving ${ARTIFACTS} at ${origin}, pool ${POOL}, timeout ${TIMEOUT_MS / 1000}s`);
+  record(
+    'runner',
+    `serving ${ARTIFACTS} at ${origin}, pool ${POOL}, timeout ${TIMEOUT_MS / 1000}s, ` +
+      (LOG_LEVEL > 0 ? `PPSSPP log level ${LOG_LEVEL}` : 'PPSSPP log level left at its default'),
+  );
   await browser.send('Page.navigate', { url: origin + '/' }, sessionId);
 
   // Poll the page rather than waiting on it. Each probe is an independent question —

@@ -167,7 +167,8 @@ wasm: native-checkout wasm-config wasm-build
 smoke:
 	node tests/smoke.mjs $(if $(SMOKE_ARTIFACTS),--artifacts=$(SMOKE_ARTIFACTS),) \
 		$(if $(SMOKE_TIMEOUT),--timeout=$(SMOKE_TIMEOUT),) \
-		$(if $(SMOKE_SETTLE),--settle=$(SMOKE_SETTLE),)
+		$(if $(SMOKE_SETTLE),--settle=$(SMOKE_SETTLE),) \
+		$(if $(SMOKE_LOGLEVEL),--loglevel=$(SMOKE_LOGLEVEL),)
 
 # Check the instrument against fakes that fail on purpose. Needs a browser but no
 # emulator, which is the opposite of `make smoke` and the reason it is its own target:
