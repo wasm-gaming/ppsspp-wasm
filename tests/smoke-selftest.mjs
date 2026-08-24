@@ -45,9 +45,12 @@ const CASES = [
       /foreignFrames=[1-9]/,
       /best [2-9]\d* colours/,
       // The page tells SDL3 where to render through Module.ENV, exactly as
-      // src/loader.ts does. A build that stopped exporting ENV would throw here rather
+      // src/loader.ts does, and from preRun because that is the last point a write to
+      // ENV is still read. A build that stopped exporting ENV would throw here rather
       // than in SDL, and this is what notices.
       /canvas selector #ppsspp-smoke/,
+      // And the bridge probe reports what it was told, rather than what it hoped.
+      /Bridge: apply_setting answered 1 for a known key, 1 for Web\/FastForward, 0 for one that does not exist\./,
     ],
     why: 'a canvas with colour on it passes, its frames are seen, the sampler reads it, and SDL3 is told where it is',
   },

@@ -552,6 +552,14 @@ creation; the hint needs nothing from upstream, so it is what is here.
 the default would work whether or not the hint arrived, and a test that cannot fail is
 not a test.
 
+**The run also asks the bridge a question**, because linking proves the four symbols
+exist and nothing else. It calls `ppsspp_web_apply_setting` three times — a key PPSSPP
+has, one of this package's own `Web/` keys, and one that cannot exist — and reports the
+three answers. `1, 1, 0` is the only correct set. Both real keys are chosen to have no
+effect on the picture, since the verdict is a screenshot and an instrument that changed
+what it measured would be worth less than none. What a smoke run still cannot reach is
+every *event*: it boots no game, so `booted` and `fps` never fire.
+
 **Note for anyone building in this repository's own agent sandbox:** the Emscripten
 ports (SDL3, SDL3_ttf, freetype, harfbuzz, zlib) are fetched from GitHub *archive*
 URLs, and those are refused (HTTP 403) by the sandbox's egress policy while `git`

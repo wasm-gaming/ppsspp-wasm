@@ -107,6 +107,7 @@ const HARNESS = `<!doctype html>
       onCanvas: true,
     },
     pixels: { samples: 0, opaque: 0, distinct: 0, best: 0, changed: 0, backdrop: 0, hash: null, error: null },
+    bridge: null,
     stdout: [],
     stderr: [],
     events: [],
@@ -360,6 +361,33 @@ const HARNESS = `<!doctype html>
 
     state.stage = 'returned';
     say({ kind: 'stage', text: 'callMain returned', heartbeatDuringCall: state.heartbeat - before });
+
+    // Ask the bridge something, and check what it answers.
+    //
+    // Linking proves the four ppsspp_web_* symbols exist; it proves nothing about the
+    // settings half, which is a lookup in PPSSPP's own config table and can be wrong in
+    // every way a lookup can. One known key, one of this package's own Web/ keys, and
+    // one that cannot exist: 1, 1, 0 is the only correct answer, and any other tells a
+    // round something a compile log never would.
+    //
+    // Both real keys are chosen to have no effect on the picture — the verdict is a
+    // screenshot, and an instrument that changed what it was measuring would be worth
+    // less than no instrument.
+    setTimeout(() => {
+      try {
+        if (typeof mod.ccall !== 'function') return;
+        const ask = (key, value) => mod.ccall('ppsspp_web_apply_setting', 'number', ['string', 'string'], [key, value]);
+        state.bridge = {
+          known: ask('Sound/GameVolume', '5'),
+          web: ask('Web/FastForward', 'False'),
+          unknown: ask('Nowhere/NoSuchSetting', '1'),
+        };
+        say({ kind: 'bridge', text: JSON.stringify(state.bridge) });
+      } catch (e) {
+        state.bridge = { error: String(e) };
+        say({ kind: 'bridge', text: String(e) });
+      }
+    }, 1000);
   } catch (e) {
     state.stage = 'threw';
     state.error = String(e && e.stack || e);
@@ -541,6 +569,22 @@ const drew = (p) => (p.pixels?.best ?? 0) > 1 && (p.pixels?.samples ?? 0) >= 2;
  */
 const transparent = (p) => (p.pixels?.best ?? 0) <= 1 && (p.pixels?.backdrop ?? 0) > 1;
 
+/**
+ * What the bridge answered, which is the only part of it a smoke run can reach.
+ *
+ * The harness boots no game, so `booted`, `fps` and the rest never fire and nothing
+ * here says they work. What it does say is that the exported function exists, that
+ * `ccall` reaches it, and that the lookup in PPSSPP's config table tells a real setting
+ * from an invented one — 1, 1, 0.
+ */
+const bridgeNote = (p) =>
+  p.bridge
+    ? p.bridge.error
+      ? ` Bridge: the call threw — ${p.bridge.error}.`
+      : ` Bridge: apply_setting answered ${p.bridge.known} for a known key, ${p.bridge.web} for Web/FastForward, ` +
+        `${p.bridge.unknown} for one that does not exist${p.bridge.known === 1 && p.bridge.web === 1 && p.bridge.unknown === 0 ? '' : ' — and 1, 1, 0 is what it should be'}.`
+    : ' Bridge: never asked.';
+
 /** What the two readings of the canvas were, once they disagree. */
 const alphaNote = (p) =>
   transparent(p)
@@ -678,7 +722,7 @@ async function main() {
     try {
       const { result } = await browser.send(
         'Runtime.evaluate',
-        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,contextAttrs:__smoke.contextAttrs,foreignFrames:__smoke.foreignFrames,gl:__smoke.gl,pixels:__smoke.pixels})', returnByValue: true },
+        { expression: 'JSON.stringify({stage:__smoke.stage,heartbeat:__smoke.heartbeat,loopTurns:__smoke.loopTurns,error:__smoke.error,contexts:__smoke.contexts,contextAttrs:__smoke.contextAttrs,foreignFrames:__smoke.foreignFrames,gl:__smoke.gl,pixels:__smoke.pixels,bridge:__smoke.bridge})', returnByValue: true },
         sessionId,
         2000,
       );
@@ -794,7 +838,7 @@ async function main() {
       verdict = `DRAWING, BUT TRANSPARENT — ${shown}` + alphaNote(probe) + glNote(probe);
       code = 1;
     } else {
-      verdict = `DRAWING — ${shown}` + alphaNote(probe) + glNote(probe);
+      verdict = `DRAWING — ${shown}` + alphaNote(probe) + glNote(probe) + bridgeNote(probe);
       code = 0;
     }
   } else if (transparent(probe)) {

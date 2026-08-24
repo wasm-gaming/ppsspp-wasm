@@ -17,6 +17,13 @@ export default async function createPpsspp(moduleArg = {}) {
     // selector into. A fake without one would make the harness throw where the
     // emulator would not.
     ENV: {},
+    // Modelled on the real bridge rather than stubbed: 1 for a setting PPSSPP has, 0
+    // for one it does not. The runner asks all three on every run, and a fake that
+    // always said 1 would let a harness bug through.
+    ccall(name, _returnType, _argTypes, args) {
+      if (name !== 'ppsspp_web_apply_setting') return 0;
+      return /^(General|CPU|Graphics|Sound|Control|SystemParam|Web)\//.test(args[0]) ? 1 : 0;
+    },
     callMain() {
       const gl = moduleArg.canvas.getContext('webgl2');
       if (!gl) throw new Error('no webgl2 context');
