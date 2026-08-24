@@ -51,6 +51,26 @@ const CASES = [
     alsoExpect: /0 opaque, [2-9]\d* over black/,
     why: 'a picture drawn at alpha 0 is on the screen and invisible to every host, and is named as that rather than as a sampler fault',
   },
+  {
+    // The case that makes drawsToCanvas and clearsToCanvas falsifiable. Every other fake
+    // paints with scissored clears or never leaves its own framebuffer, so both counters
+    // could have been zero constants and all of these would still have passed — which is
+    // how a wrong number survived rounds 18 through 23. This one issues real draw calls
+    // with the default framebuffer bound, and binds it as PPSSPP's fbo_unbind() does.
+    dir: 'blits',
+    code: 0,
+    expect: /^DRAWING —/m,
+    alsoExpect: [
+      /[1-9]\d* draw calls \([1-9]\d* with the default framebuffer bound\)/,
+      /"FRAMEBUFFER:default":[1-9]/,
+      // A zero framebuffer name passed straight from JS arrives as null. Emscripten's
+      // own glBindFramebuffer forwards GL.framebuffers[0], a hole in the array, and it
+      // arrives as undefined instead — which is why the runner's test is falsy rather
+      // than `=== null`, and why both spellings are worth having on record.
+      /arriving as \{"object":[1-9]\d*,"null":[1-9]/,
+    ],
+    why: 'a renderer that does blit to the canvas is counted as one, so the canvas counters can fail',
+  },
   { dir: 'clears', code: 1, expect: /^CLEARED, NOT DRAWN —/m, why: 'a uniform canvas is not a picture' },
   { dir: 'blank', code: 1, expect: /^BLANK —/m, why: 'a live loop that never paints fails' },
   {
